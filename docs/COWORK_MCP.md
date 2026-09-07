@@ -103,9 +103,11 @@ The script creates or updates:
 
 - the MCP server/resource application, `requestedAccessTokenVersion=2`, with
   exposed delegated scope `noc.invoke`;
-- the Cowork OAuth client application with redirect URI
-  `https://teams.microsoft.com/api/platform/v1.0/oAuthRedirect`;
-- the client-to-resource delegated permission and admin consent;
+- a separate Cowork OAuth client retained for direct delegated-flow diagnostics;
+  the Teams Developer Portal auth configuration itself must use the MCP
+  resource application's client ID;
+- client-to-resource delegated permission and admin consent for that diagnostic
+  client;
 - the resource application's delegated Azure AI permission needed by the OBO
   exchange, plus admin consent;
 - a federated identity credential that trusts the MCP UAMI as the resource
@@ -124,13 +126,42 @@ create it. In the [Teams Developer Portal](https://dev.teams.microsoft.com/):
 
 1. Open **Tools > Microsoft Entra SSO client ID registration** and select
    **New client registration**.
-2. Set the base URL to the APIM MCP URL, the client/application ID to the
-   emitted `coworkOAuthClientAppId`, and the scope to the emitted full
+2. Set the base URL to the APIM MCP URL. Set **Client ID** to the emitted
+   `mcpResourceAppClientId` (the app securing the MCP server), **not**
+   `coworkOAuthClientAppId`. Set **Scope** to the emitted full
    `api://<resource-app-id>/noc.invoke` scope.
-3. Restrict the registration to the target organization and, after sideload,
-   to the stable manifest app ID.
-4. Save and copy the resulting **Microsoft Entra SSO registration ID**. This
-   is `COWORK_AUTH_CONFIG_REFERENCE_ID`, not either Entra application ID.
+3. Restrict the registration to the target organization. If the final Teams
+   app ID is not yet registered, select **Any Teams app** temporarily. After
+   installation, bind it to the app manifest's stable `id` (`coworkManifestId`),
+   not an Agent Identity, Entra object ID, OAuth client ID, or installation
+   `TitleId`.
+4. Save and copy both generated values:
+   - **Microsoft Entra SSO registration ID** -> `COWORK_AUTH_CONFIG_REFERENCE_ID`.
+   - **Application ID URI** -> the additional audience required below.
+
+If the generated Application ID URI ends with `coworkOAuthClientAppId`, the
+wrong client ID was registered. Delete or replace that auth configuration and
+repeat step 2 with `mcpResourceAppClientId`.
+
+The portal registration is not the final authentication step. Per the
+[Microsoft Entra SSO guidance](https://learn.microsoft.com/microsoft-365/copilot/extensibility/plugin-authentication-entra-sso), rerun the setup script with the generated URI:
+
+```powershell
+python scripts/setup_cowork_mcp_entra.py `
+  --tenant-id <tenant-id> `
+  --mcp-uami-client-id "<mcpHostIdentityClientId>" `
+  --mcp-uami-principal-id "<mcpHostIdentityPrincipalId>" `
+  --resource-app-id "<mcpResourceAppClientId>" `
+  --cowork-client-app-id "<coworkOAuthClientAppId>" `
+  --sso-application-id-uri "<portal-generated-Application-ID-URI>"
+```
+
+This preserves the original `api://<resource-app-id>` identifier, adds the
+portal-generated identifier URI, adds the Teams OAuth consent redirect URI,
+and preauthorizes the Microsoft Enterprise token store client
+`ab3be6b7-f5df-413d-ac2d-abf1e3fd9c0b` for `noc.invoke`. Finally, redeploy the
+MCP host with `mcpServerAudience` set to the portal-generated Application ID
+URI so both Easy Auth and the application accept the token audience.
 
 ## 4. Build and deploy the MCP host
 
@@ -155,7 +186,7 @@ mcpSearchServiceResourceId=<existing Search service ARM resource ID>
 mcpCallerPrincipalId=<Entra group object ID containing authorized Cowork users>
 mcpCallerPrincipalType=Group
 mcpServerAppClientId=<script mcpResourceAppClientId>
-mcpServerAudience=<script resourceUri>
+mcpServerAudience=<portal-generated Application ID URI>
 mcpRequiredScope=noc.invoke
 mcpToolTimeoutSeconds=28
 entraTenantId=<tenant-id>
@@ -202,7 +233,8 @@ description is written as `noc-mcp-tools.json` at the ZIP root (not under a
 For a personal sideload:
 
 ```powershell
-atk auth login
+npm install -g @microsoft/m365agentstoolkit-cli
+atk auth login m365
 atk install --file-path "C:/Flutter/noc-agent-a365/cowork/build/noc-cowork.zip" --scope Personal
 ```
 

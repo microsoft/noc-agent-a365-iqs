@@ -21,6 +21,8 @@ GRAPH = "https://graph.microsoft.com/v1.0"
 AZURE_AI_RESOURCE = "https://ai.azure.com"
 TOKEN_EXCHANGE_AUDIENCE = "api://AzureADTokenExchange"
 TEAMS_REDIRECT_URI = "https://teams.microsoft.com/api/platform/v1.0/oAuthRedirect"
+TEAMS_CONSENT_REDIRECT_URI = "https://teams.microsoft.com/api/platform/v1.0/oAuthConsentRedirect"
+M365_TOKEN_STORE_CLIENT_ID = "ab3be6b7-f5df-413d-ac2d-abf1e3fd9c0b"
 FEDERATED_CREDENTIAL_NAME = "mcp-uami-client-assertion"
 _az_cli = shutil.which("az") or shutil.which("az.cmd") or "az"
 # Windows installs Azure CLI as az.cmd; invoke its bundled Python directly so
@@ -285,8 +287,15 @@ def main() -> None:
     parser.add_argument("--scope-value", default="noc.invoke")
     parser.add_argument("--downstream-resource-app-id")
     parser.add_argument("--downstream-scope-value")
+    parser.add_argument(
+        "--sso-application-id-uri",
+        help="Application ID URI emitted by Teams Developer Portal after creating the SSO auth config.",
+    )
     parser.add_argument("--skip-admin-consent", action="store_true")
     args = parser.parse_args()
+
+    if args.sso_application_id_uri and not args.sso_application_id_uri.startswith("api://"):
+        raise RuntimeError("--sso-application-id-uri must be the api:// URI emitted by Teams Developer Portal.")
 
     account = _run_az(["account", "show"])
     if not isinstance(account, dict) or account.get("tenantId") != args.tenant_id:
@@ -327,7 +336,19 @@ def main() -> None:
             "requestedAccessTokenVersion": 2,
         }
     )
-    identifiers = sorted(set([*(resource_app.get("identifierUris") or []), resource_uri]))
+    identifiers = sorted(
+        set(
+            [
+                *(resource_app.get("identifierUris") or []),
+                resource_uri,
+                *([args.sso_application_id_uri] if args.sso_application_id_uri else []),
+            ]
+        )
+    )
+    resource_web = dict(resource_app.get("web") or {})
+    resource_web["redirectUris"] = sorted(
+        set([*(resource_web.get("redirectUris") or []), TEAMS_CONSENT_REDIRECT_URI])
+    )
 
     downstream_sp, downstream_scope = _resolve_downstream(
         args.downstream_resource_app_id,
@@ -344,20 +365,22 @@ def main() -> None:
         body={
             "identifierUris": identifiers,
             "api": resource_api,
+            "web": resource_web,
             "requiredResourceAccess": resource_access,
         },
     )
 
     # Graph must persist a new permission before pre-authorization can reference it.
     preauthorized = list(resource_api.get("preAuthorizedApplications", []))
-    preauth = next(
-        (item for item in preauthorized if item.get("appId") == cowork_client["appId"]),
-        None,
-    )
-    if preauth is None:
-        preauthorized.append({"appId": cowork_client["appId"], "delegatedPermissionIds": [scope_id]})
-    elif scope_id not in preauth.get("delegatedPermissionIds", []):
-        preauth["delegatedPermissionIds"] = [*preauth.get("delegatedPermissionIds", []), scope_id]
+    for client_app_id in (cowork_client["appId"], M365_TOKEN_STORE_CLIENT_ID):
+        preauth = next(
+            (item for item in preauthorized if item.get("appId") == client_app_id),
+            None,
+        )
+        if preauth is None:
+            preauthorized.append({"appId": client_app_id, "delegatedPermissionIds": [scope_id]})
+        elif scope_id not in preauth.get("delegatedPermissionIds", []):
+            preauth["delegatedPermissionIds"] = [*preauth.get("delegatedPermissionIds", []), scope_id]
     resource_api["preAuthorizedApplications"] = preauthorized
     _graph("patch", f"applications/{resource_app['id']}", body={"api": resource_api})
 
@@ -399,11 +422,14 @@ def main() -> None:
         "resourceUri": resource_uri,
         "scope": scope_uri,
         "coworkManifestId": str(uuid.uuid5(uuid.NAMESPACE_URL, f"{resource_uri}/cowork-manifest")),
+        "microsoftEnterpriseTokenStoreClientId": M365_TOKEN_STORE_CLIENT_ID,
+        "ssoApplicationIdUri": args.sso_application_id_uri or "<RETURNED-BY-TEAMS-DEVELOPER-PORTAL>",
         "oauthPluginVaultReferenceId": "<CREATE-IN-TEAMS-DEVELOPER-PORTAL>",
         "oauthPluginVaultInstruction": (
-            "Teams Developer Portal > Tools > Microsoft Entra SSO client ID registration: "
-            "register the MCP URL, Cowork OAuth client app ID, and scope above; copy the resulting "
-            "Microsoft Entra SSO registration ID into COWORK_AUTH_CONFIG_REFERENCE_ID."
+            "Register the MCP URL with the MCP resource app client ID (not coworkOAuthClientAppId) "
+            "and the full scope above. Copy the registration ID into COWORK_AUTH_CONFIG_REFERENCE_ID, "
+            "then rerun this script with --sso-application-id-uri set to the portal-generated URI and "
+            "redeploy the MCP host with mcpServerAudience set to that URI."
         ),
     }
     print(json.dumps(output, indent=2))

@@ -17,7 +17,7 @@ directly from `infra/core/ai/rbac.bicep`, `gateway/infra/core/**/*.bicep`,
 | `noc-iq-demo-teams-users` AAD group (recommended) | Group | Assign Foundry project + Fabric roles to this group once; add/remove Teams users as members instead of repeating per-user role assignments. |
 | `identities.bicep` worker/admin-ui/run-ledger user-assigned managed identities | Service | Gateway-side (APIM cost-governance stack): `config-sync-worker` job, Admin UI Container App, run-ledger service. |
 | `id-mcphost-*` user-assigned managed identity | Service | Cowork MCP Container App: ACR pull, Foundry/Search access, and a federated client assertion for user OBO. It has no client secret. |
-| Cowork MCP resource app + OAuth client app | Entra applications | Resource app exposes `noc.invoke`; the client requests it and uses the Teams OAuth redirect. Provisioned idempotently by `scripts/setup_cowork_mcp_entra.py`. |
+| Cowork MCP resource app + Microsoft Enterprise token store | Entra applications | The resource app exposes `noc.invoke`; the Teams Developer Portal auth configuration uses that resource app's client ID. After registration, its generated Application ID URI is added as an accepted audience, the Teams OAuth consent redirect is registered, and token-store client `ab3be6b7-f5df-413d-ac2d-abf1e3fd9c0b` is preauthorized. `scripts/setup_cowork_mcp_entra.py` applies the Entra-side configuration idempotently. |
 | Work IQ app registration (classic Entra app, `WORKIQ_ENTRA_APP_ID`) | Service (delegated) | The only classic app registration in this design — needed because Work IQ uses delegated Graph auth, unlike everything else which is UserEntraToken/OBO or managed identity. |
 
 ## 1. Foundry project RBAC (`infra/core/ai/rbac.bicep`) — declared in Bicep
