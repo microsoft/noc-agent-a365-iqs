@@ -55,13 +55,15 @@ def main() -> None:
         raise ValueError("The resolved manifest still contains a placeholder.")
     manifest = json.loads(manifest_text)
 
+    skill_files = [
+        ROOT / item["folder"].removeprefix("./") / "SKILL.md"
+        for item in manifest.get("agentSkills", [])
+    ]
     required_files = [
         ROOT / "color.png",
         ROOT / "outline.png",
         ROOT / "tools" / "noc-mcp-tools.json",
-        ROOT / "skills" / "incident-triage" / "SKILL.md",
-        ROOT / "skills" / "blast-radius" / "SKILL.md",
-        ROOT / "skills" / "customer-comms" / "SKILL.md",
+        *skill_files,
     ]
     missing = [str(path.relative_to(ROOT)) for path in required_files if not path.is_file()]
     if missing:

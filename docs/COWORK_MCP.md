@@ -235,7 +235,8 @@ python cowork/package.py `
 
 The output is `cowork/build/noc-cowork.zip`. The script resolves placeholders
 in memory, validates the URL/GUID, and packages `manifest.json`, both icons,
-the matching tool description, and all three `SKILL.md` folders. The tool
+the matching tool description, and every `SKILL.md` folder declared by the
+manifest. The tool
 description is written as `noc-mcp-tools.json` at the ZIP root (not under a
 `tools/` directory), and must contain a non-empty top-level `tools` array.
 
@@ -256,18 +257,27 @@ test users. Save the returned `TitleId` and `AppId` from either path.
 1. Open Microsoft 365 Copilot **Cowork > Sources & Skills > Plugins**.
 2. Find **NOC Investigation** in **Discover**, enable it, and complete the
    one-time Entra consent prompt.
-3. Start a new Cowork task: `Triage incident INC-001. Give me confirmed
-   telemetry, affected services, and the next runbook action.`
-4. Test blast radius separately: `For LINK-SYD-MEL-FIBRE-01, identify affected
-   services, SLA exposure, alternate paths, and shared-conduit risk.`
-5. Test drafting separately: `Draft a customer status update for INC-001 using
-   confirmed impact only. Do not send it.`
-6. Confirm the tool shown in the run is `noc_investigate`, results identify
-   specialist grounding, and no action is represented as executed.
+3. Test Foundry IQ narrative: `What's our standard runbook for a fibre cut on
+   a DWDM link, and has anything like INC-2025-08-14-0042 happened before?`
+4. Test Fabric IQ topology: `If LINK-SYD-MEL-FIBRE-01 goes down completely,
+   what's the blast radius, and is there any other link sharing the same
+   physical conduit?`
+5. Test Web IQ public evidence: `Is there any public vendor advisory or carrier
+   status-page report about DWDM equipment issues on the Sydney–Melbourne
+   corridor this week?`
+6. Test Work IQ context: `Who's on-call right now, and what's being discussed
+   on the current incident bridge?`
+7. Test RTI live evidence: `For LINK-SYD-MEL-FIBRE-01, what was the alert
+   timeline and optical readings around 2025-08-14 03:22 UTC — when exactly did
+   loss of light hit each sensor, and was anything suppressed?`
+8. Test evidence versus narrative: `For the SYD-MEL fibre cut, what does the
+   ticket say the time-to-detect was, versus what the actual telemetry shows?`
+9. Confirm the tool shown in each run is `noc_investigate`, results identify the
+   requested specialist grounding, and no action is represented as executed.
 
 **Cowork requires each tool call to complete in less than 30 seconds.** The
 host enforces `MCP_TOOL_TIMEOUT_SECONDS` with a default and hard ceiling of
 28 seconds. A full NOC investigation across all five specialists can exceed
-that limit; use the three focused skill workflows or retry with a narrower
+that limit; use the focused specialist skill workflows or retry with a narrower
 asset/evidence question. The timeout is enforced in the application, not
 simulated by an APIM policy.

@@ -43,13 +43,22 @@
   ],
   "agentSkills": [
     {
-      "folder": "./skills/incident-triage"
+      "folder": "./skills/runbook-history"
     },
     {
       "folder": "./skills/blast-radius"
     },
     {
-      "folder": "./skills/customer-comms"
+      "folder": "./skills/public-advisory"
+    },
+    {
+      "folder": "./skills/on-call-bridge"
+    },
+    {
+      "folder": "./skills/incident-telemetry"
+    },
+    {
+      "folder": "./skills/evidence-vs-narrative"
     }
   ]
 }
