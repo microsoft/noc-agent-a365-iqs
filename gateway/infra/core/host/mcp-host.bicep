@@ -228,6 +228,11 @@ resource mcpHostAuth 'Microsoft.App/containerApps/authConfigs@2024-10-02-preview
           ], [
             mcpServerAudience
           ])
+          defaultAuthorizationPolicy: {
+            allowedApplications: [
+              'ab3be6b7-f5df-413d-ac2d-abf1e3fd9c0b'
+            ]
+          }
         }
       }
     }
