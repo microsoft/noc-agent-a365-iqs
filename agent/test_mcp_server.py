@@ -97,9 +97,11 @@ async def main():
     assert tool.inputSchema["additionalProperties"] is False
     assert tool.annotations.readOnlyHint is True
     assert tool.annotations.destructiveHint is False
-    declared_tool = json.loads(
+    declared_tools = json.loads(
         (Path(__file__).resolve().parent.parent / "cowork" / "tools" / "noc-mcp-tools.json").read_text()
-    )
+    )["tools"]
+    assert len(declared_tools) == 1
+    declared_tool = declared_tools[0]
     assert declared_tool["name"] == tool.name
     assert declared_tool["description"] == tool.description
     assert declared_tool["inputSchema"] == tool.inputSchema
@@ -114,9 +116,13 @@ async def main():
 
     original_precall = mcp_server._run_ledger_precall
     original_postcall = mcp_server._run_ledger_postcall
-    mcp_server._run_ledger_precall = lambda **_kwargs: asyncio.sleep(
-        0, result={"action": "allow", "reservation_id": "reservation"}
-    )
+    precall_kwargs = {}
+
+    async def fake_precall(**kwargs):
+        precall_kwargs.update(kwargs)
+        return {"action": "allow", "reservation_id": "reservation"}
+
+    mcp_server._run_ledger_precall = fake_precall
     mcp_server._run_ledger_postcall = lambda *_args, **_kwargs: asyncio.sleep(0)
     try:
         result = await mcp_server._invoke_noc_tool(
@@ -138,6 +144,7 @@ async def main():
     assert noc_agent.run_token_args[1].startswith("request-42-")
     assert agent_tool.observed["name"] == "noc_investigate"
     assert agent_tool.observed["arguments"] == {"task": "Investigate LINK-1"}
+    assert precall_kwargs["prompt"] == "Investigate LINK-1"
     assert agent_tool.observed["user_token"] == "foundry-obo-token"
     assert agent_tool.observed["run_id"].startswith("run:user-oid:request-42-")
     assert agent_tool.observed["run_token"] == "run-token"

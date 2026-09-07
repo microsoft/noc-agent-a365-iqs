@@ -3,6 +3,13 @@
 Known gotchas surfaced while researching and building this solution, recorded
 here so `fix-loop` doesn't have to rediscover them.
 
+## Cowork MCP works, but Fabric Data Agent graph execution regressed
+
+| Symptom | Investigation | Root cause / current boundary | Fix / next action |
+|---|---|---|---|
+| Cowork authenticates, lists `noc_investigate`, and invokes it through APIM, but topology answers report `DataAgent_NOCNetworkDataAgent` failed before producing a result | Reproduced independently against the Data Agent's raw Fabric MCP endpoint with an admin Fabric token. `initialize` and `tools/list` returned HTTP 200, while `tools/call` returned `isError: true` with `The Data Agent run failed before producing a result.` Republishing with `python scripts/create_fabric_data_agent.py` succeeded and changed the response to `isError: false`, but the answer was still ungrounded and explicitly said it could not access the topology data. The current GraphModel definition contains 8 nodes/8 edges, its latest manual Refresh completed, the F64 capacity is active, and the Data Agent still points at the correct Ontology item. | Authentication, Cowork packaging, APIM, MCP transport, and Foundry-agent invocation are proven healthy. The remaining fault is inside the Fabric Data Agent → Ontology/GraphModel data-query layer. A successful REST `updateDefinition`/Refresh is not sufficient evidence that the graph is queryable by the Data Agent; the automated GraphModel definition may have drifted from the portal-authored representation that previously worked. | Open `NOCNetworkOntology` in the Fabric portal and run the narrow query in the graph/Data Agent test pane: `Which transport links originate at CORE-SYD-01, and what conduit does each ride on?` Inspect the generated GQL/error. If the canvas is empty or mappings are inconsistent, rebuild the 8 nodes and edges from the table below, Save, Refresh, rerun `scripts/create_fabric_data_agent.py`, then retest the raw MCP endpoint before retrying Cowork. Expected result: links `LINK-SYD-MEL-FIBRE-01` and `-02` share `CONDUIT-SYD-MEL-INLAND`. |
+| MCP host logs show HTTP 422 for run-ledger `/v1/precall` and `/v1/postcall`, although the Cowork answer still completes | Compared the shared client payload in `agent/agent.py` with `run_ledger.models.PrecallRequest`/`PostcallRequest`. The client omitted required `prompt_hash`; after that 422, it still sent postcall with `reservation_id: null`, which violates the required string field and caused a second 422. | Client/schema drift in the shared Teams/Cowork run-ledger helper, not an APIM or authentication problem. | `_run_ledger_precall` now hashes the real prompt with SHA-256 and sends `prompt_hash`; all orchestrator, specialist, and MCP call sites pass their prompt text. `_run_ledger_postcall` skips when no reservation was created. Focused tests pass, and image `noc-mcp:20260907-4` is deployed as healthy revision `ca-mcphost-aigw-dev-eus2--0000003`. Verify accounting on the next authenticated Cowork turn. |
+
 ## Reference: manual node/edge build table for `NOCNetworkOntology`'s graph canvas
 
 The Ontology item's schema and data bindings were correct all along (see
@@ -60,7 +67,7 @@ usually the source table's own row identifier (matching the origin node's
 key), and "Target key" is the foreign-key-style column whose values match
 the target node's key.
 
-Workflow: create all 8 nodes → **Save** → create all 6 edges → **Save** →
+Workflow: create all 8 nodes → **Save** → create all 8 edges → **Save** →
 **Refresh** the `GraphModel` item. Only after nodes/edges are defined does
 `Refresh` have anything to build (see the two entries below for the
 diagnostic trail that led here).

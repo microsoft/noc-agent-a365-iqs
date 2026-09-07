@@ -284,6 +284,7 @@ async def _invoke_noc_tool(
                 step=next_step(),
                 model=MODEL_DEPLOYMENT_NAME,
                 est_input_tokens=estimated_input_tokens,
+                prompt=str(task),
             )
             reservation_id = _apply_precall_decision(decision)
 

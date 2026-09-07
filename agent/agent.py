@@ -274,7 +274,13 @@ class _RunHaltedError(Exception):
 
 
 async def _run_ledger_precall(
-    run_id: str, agent_name: str, step: str, model: str, est_input_tokens: int, max_output_tokens: int = 1024,
+    run_id: str,
+    agent_name: str,
+    step: str,
+    model: str,
+    est_input_tokens: int,
+    max_output_tokens: int = 1024,
+    prompt: str = "",
 ) -> Optional[dict]:
     """Best-effort precall decision from the run ledger. Returns None (== "allow, no
     ledger opinion") if the ledger is unreachable/unconfigured -- never blocks a turn
@@ -295,6 +301,7 @@ async def _run_ledger_precall(
                     "model": model,
                     "est_input_tokens": max(0, est_input_tokens),
                     "max_output_tokens": max_output_tokens,
+                    "prompt_hash": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
                 },
             )
             response.raise_for_status()
@@ -316,7 +323,7 @@ async def _run_ledger_postcall(
     view (never raises) -- a missed postcall degrades run-ledger accuracy, not the turn.
     """
     base_url = _run_ledger_base_url()
-    if not base_url:
+    if not base_url or not reservation_id:
         return
     payload: dict = {"run_id": run_id, "reservation_id": reservation_id}
     if failed:
@@ -814,6 +821,7 @@ class NocAgent(AgentInterface):
                 model=agent_name,
                 est_input_tokens=len(question) // 4,
                 max_output_tokens=1024,  # advisory ceiling offered to the ledger's decision, not applied unless it mutates
+                prompt=question,
             )
             reservation_id = _apply_precall_decision(decision)  # raises _RunHaltedError on halt/queue
             if decision and decision.get("action") == "mutate" and decision.get("max_output_tokens"):
@@ -948,6 +956,7 @@ class NocAgent(AgentInterface):
                     step=step or "0",
                     model=MODEL_DEPLOYMENT_NAME,
                     est_input_tokens=est_input_tokens,
+                    prompt="\n".join(str(getattr(m, "contents", m)) for m in history),
                 )
                 reservation_id = _apply_precall_decision(decision)  # raises _RunHaltedError on halt/queue
             try:
