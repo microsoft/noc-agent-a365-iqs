@@ -53,8 +53,8 @@ param apimPublisherName string
 @description('APIM publisher contact email.')
 param apimPublisherEmail string
 
-@description('APIM SKU name. Use PremiumV2 for fast v2 VNet injection. Legacy classic Name_Capacity values such as Developer_1 are still accepted.')
-param apimSkuName string = 'PremiumV2'
+@description('APIM SKU name. StandardV2 is the default for public Cowork ingress with VNet backend integration; PremiumV2 remains available for private-only gateways.')
+param apimSkuName string = 'StandardV2'
 
 @description('Expose the admin UI Container App externally. Default false keeps the Container Apps environment internal-only.')
 param adminUiPublic bool = false
@@ -195,6 +195,41 @@ param runLedgerImage string = ''
 @description('Expose the run-ledger Container App externally. Default false keeps it internal-only.')
 param runLedgerPublic bool = false
 
+@description('Full image reference for the Cowork MCP host. Empty skips the Container App and APIM APIs.')
+param mcpHostImage string = ''
+
+@description('Foundry project endpoint used by the Cowork MCP host.')
+param mcpFoundryProjectEndpoint string = ''
+
+@description('Foundry model deployment used by the Cowork MCP host.')
+param mcpFoundryModelDeploymentName string = ''
+
+@description('Foundry project ARM resource ID used for MCP host managed-identity RBAC.')
+param mcpFoundryProjectResourceId string = ''
+
+@description('Azure AI Search ARM resource ID used for MCP host Foundry IQ RBAC.')
+param mcpSearchServiceResourceId string = ''
+
+@description('Object ID of the Entra group or user allowed to invoke the Cowork MCP channel and its user-delegated Foundry specialists.')
+param mcpCallerPrincipalId string = ''
+
+@description('Principal type of mcpCallerPrincipalId.')
+param mcpCallerPrincipalType string = 'Group'
+
+@description('Client ID of the Entra resource application securing the Cowork MCP host.')
+param mcpServerAppClientId string = ''
+
+@description('Identifier URI accepted as an MCP access-token audience.')
+param mcpServerAudience string = ''
+
+@description('Delegated scope value exposed by the MCP resource application.')
+param mcpRequiredScope string = 'noc.invoke'
+
+@minValue(1)
+@maxValue(28)
+@description('Cowork MCP tool-call timeout in seconds.')
+param mcpToolTimeoutSeconds int = 28
+
 @description('Serialized per-model prices injected into the run-ledger service.')
 param modelPricesJson string = '{}'
 
@@ -245,6 +280,8 @@ var nameSuffix = '${prefix}-${env}-${locationShort}'
 var resourceToken = uniqueString(subscription().id, resourceGroupName, location)
 var apimResourceName = toLower(take('apim${replace(nameSuffix, '-', '')}${resourceToken}', 50))
 var apimResourceId = resourceId(subscription().subscriptionId, resourceGroupName, 'Microsoft.ApiManagement/service', apimResourceName)
+var mcpFoundryProjectParts = split(mcpFoundryProjectResourceId, '/')
+var mcpSearchServiceParts = split(mcpSearchServiceResourceId, '/')
 var openAiAliasNames = [for deployment in openaiDeployments: deployment.name]
 var foundryAliasNames = [for deployment in foundryDeployments: deployment.name]
 var aliasModelsJson = string({
@@ -423,6 +460,62 @@ module runLedger 'core/host/run-ledger.bicep' = {
   }
 }
 
+module mcpHost 'core/host/mcp-host.bicep' = {
+  name: 'mcp-host'
+  scope: rg
+  params: {
+    location: location
+    tags: tags
+    nameSuffix: nameSuffix
+    managedEnvironmentId: containerApps.outputs.environmentId
+    acrId: registry.outputs.registryId
+    acrLoginServer: registry.outputs.loginServer
+    mcpHostImage: mcpHostImage
+    mcpHostIdentityId: identities.outputs.mcpHostIdentityId
+    mcpHostPrincipalId: identities.outputs.mcpHostPrincipalId
+    mcpHostClientId: identities.outputs.mcpHostClientId
+    entraTenantId: entraTenantId
+    mcpServerAppClientId: mcpServerAppClientId
+    mcpServerAudience: mcpServerAudience
+    mcpRequiredScope: mcpRequiredScope
+    mcpAllowedCallerObjectId: mcpCallerPrincipalId
+    mcpAllowedCallerType: mcpCallerPrincipalType
+    publicMcpUrl: 'https://${apimResourceName}.azure-api.net/mcp'
+    foundryProjectEndpoint: mcpFoundryProjectEndpoint
+    foundryModelDeploymentName: mcpFoundryModelDeploymentName
+    runLedgerBaseUrl: runLedger.outputs.appFqdn
+    runLedgerBudgetMicros: 2000000
+    runLedgerPolicySet: 'default'
+    mcpToolTimeoutSeconds: mcpToolTimeoutSeconds
+    appInsightsConnectionString: observability.outputs.appInsightsConnectionString
+  }
+  dependsOn: [
+    mcpHostRbac
+    mcpSearchRbac
+  ]
+}
+
+module mcpHostRbac 'core/ai/mcp-host-rbac.bicep' = if (!empty(mcpHostImage)) {
+  name: 'mcp-host-rbac'
+  scope: resourceGroup(mcpFoundryProjectParts[2], mcpFoundryProjectParts[4])
+  params: {
+    aiServicesAccountName: mcpFoundryProjectParts[8]
+    aiProjectName: mcpFoundryProjectParts[10]
+    principalId: identities.outputs.mcpHostPrincipalId
+    callerPrincipalId: mcpCallerPrincipalId
+    callerPrincipalType: mcpCallerPrincipalType
+  }
+}
+
+module mcpSearchRbac 'core/ai/mcp-search-rbac.bicep' = if (!empty(mcpHostImage)) {
+  name: 'mcp-search-rbac'
+  scope: resourceGroup(mcpSearchServiceParts[2], mcpSearchServiceParts[4])
+  params: {
+    searchServiceName: mcpSearchServiceParts[8]
+    principalId: identities.outputs.mcpHostPrincipalId
+  }
+}
+
 module apim 'core/apim/apim.bicep' = {
   name: 'apim'
   scope: rg
@@ -448,6 +541,7 @@ module apim 'core/apim/apim.bicep' = {
     tokenQuotaPeriod: tokenQuotaPeriod
     runLedgerBaseUrl: runLedger.outputs.appFqdn
     adminUiBaseUrl: containerApps.outputs.adminUiFqdn
+    mcpHostBaseUrl: mcpHost.outputs.appFqdn
     runTokensPerMinute: runTokensPerMinute
     runTokenQuota: runTokenQuota
     runTokenQuotaPeriod: runTokenQuotaPeriod
@@ -532,3 +626,8 @@ output configSyncJobName string = containerApps.outputs.jobName
 output adminUiFqdn string = containerApps.outputs.adminUiFqdn
 output adminUiGatewayUrl string = apim.outputs.adminUiGatewayUrl
 output runLedgerFqdn string = runLedger.outputs.appFqdn
+output mcpHostFqdn string = mcpHost.outputs.appFqdn
+output mcpHostIdentityClientId string = identities.outputs.mcpHostClientId
+output mcpHostIdentityPrincipalId string = identities.outputs.mcpHostPrincipalId
+output mcpGatewayUrl string = apim.outputs.mcpGatewayUrl
+output mcpProtectedResourceMetadataUrl string = apim.outputs.mcpProtectedResourceMetadataUrl

@@ -7,10 +7,14 @@ authors = [
 ]
 dependencies = [
     # Microsoft Agent Framework (MAF) -- runs in-process, not via a pre-built Foundry agent
-    "agent-framework-core>=1.10.0",
+    "agent-framework-core>=1.13,<2",
     "agent-framework-foundry>=1.10.0",
     "agent-framework-foundry-hosting>=1.0.0a260630",
-    "mcp>=1.28.1,<2",
+    "agent-framework-hosting==1.0.0a260730",
+    "agent-framework-hosting-mcp==1.0.0a260730",
+    "mcp>=1.27,<2",
+    "starlette>=0.40",
+    "uvicorn>=0.30",
 
     # Foundry project connection-id resolution for the 4 native IQ tools
     "azure-ai-projects>=2.3.0",

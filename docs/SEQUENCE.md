@@ -29,13 +29,16 @@ sequenceDiagram
     Fab->>Fab: Create ontology (CoreRouter/TransportLink/PhysicalConduit/... + relationships)
     Fab-->>Op: FABRIC_ONTOLOGY_ID, ontology UI + MCP URLs
 
+    Op->>Fab: python scripts/create_fabric_graph.py
+    Fab->>Fab: Populate the ontology's GraphModel with 8 nodes + 8 edges
     Op->>Fab: python scripts/create_fabric_data_agent.py
     Fab->>Fab: Create/publish Fabric Data Agent over the ontology
     Fab-->>Op: FABRIC_DATA_AGENT_MCP_URL
 
     Op->>Az: Portal — add Web IQ connection (CustomKeys/x-apikey) [done via Bicep if key supplied]
-    Op->>Az: python scripts/create_workiq_toolbox.py  (WorkIQ connection, authType=UserEntraToken)
-    Op->>Az: ARM PUT fabric-iq-connection  (authType=UserEntraToken, see DEPLOYMENT.md Sec4c)
+    Op->>Az: python scripts/setup_workiq_entra_app.py
+    Az->>Az: Create/reuse Work IQ Entra app + secret + WorkIQAgent.Ask consent +<br/>Azure AI Developer RBAC + OAuth2 Foundry connection + redirect URI
+    Op->>Az: python scripts/create_fabric_iq_connection.py  (authType=UserEntraToken)
     Op->>Az: python scripts/create_rti_connection.py  (fabric-rti-connection, authType=UserEntraToken,<br/>target = Fabric Eventhouse MCP endpoint)
     Op->>Az: python scripts/create_foundry_agents.py
     Az->>Az: For each of 5 IQ connections: resolve connection, project.agents.create_version(<br/>  name, PromptAgentDefinition(model, instructions, tools=[MCPTool(project_connection_id)]))
@@ -361,3 +364,43 @@ cycle reads that usage back out, refreshes pricing, and re-tightens the
 named values the *next* turn's precall checks against. Cosmos is the
 desired-state source of truth throughout; APIM named values are only the
 runtime-enforced mirror.
+
+## 6. Copilot Cowork MCP channel
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant User as Cowork user
+    participant Cowork as Copilot Cowork
+    participant APIM as APIM /mcp
+    participant Auth as Container Apps Easy Auth
+    participant MCP as MCP host / AgentMCPTool
+    participant NOC as Existing NocAgent._agent
+    participant Ledger as Run ledger
+    participant Foundry as Foundry specialists
+
+    Cowork->>APIM: GET /.well-known/oauth-protected-resource/mcp
+    APIM->>MCP: Transparent metadata pass-through
+    MCP-->>Cowork: RFC 9728 resource, authorization server, noc.invoke scope
+    User->>Cowork: Focused incident investigation
+    Cowork->>APIM: POST /mcp (Bearer token, tools/call noc_investigate)
+    APIM->>Auth: Preserve authorization, MCP headers, and body
+    Auth->>Auth: Validate Entra signature, issuer, and audience
+    Auth->>MCP: Validated request
+    MCP->>MCP: Check trusted claims/scope; OBO to ai.azure.com
+    MCP->>Ledger: Mint run from oid + MCP request id; precall
+    MCP->>NOC: AgentMCPTool.call_tool(task), per-call contextvars set
+    NOC->>Foundry: Existing orchestrator and specialist calls
+    Foundry-->>NOC: Grounded response
+    NOC-->>MCP: Final MCP content
+    MCP->>Ledger: Postcall
+    MCP->>MCP: Reset contextvars in finally
+    MCP-->>Cowork: Result, bounded to 28 seconds
+```
+
+This is a channel adapter, not a fork of the orchestration. It initializes one
+`NocAgent`, exposes the existing `_agent`, and retains the same specialist and
+run-ledger behavior. Cowork's tool-call limit is less than 30 seconds, so the
+application returns a useful timeout error by 28 seconds; broad five-specialist
+investigations should be split into focused triage, blast-radius, and
+communications tasks.

@@ -14,7 +14,7 @@ Ported from `C:\Flutter\apim-foundry-governance` into `gateway/infra` as a stand
 - Terraform `map(object(...))` inputs became Bicep arrays-of-objects where that keeps loops and parameter files simpler.
 - Terraform `templatefile()` policy rendering became `loadTextContent()` + `replace()` in `core/apim/apim.bicep` because Bicep has no native text template engine.
 - Terraform `count` / `for_each` became Bicep `if (...)` and resource loops.
-- APIM now defaults to **PremiumV2** instead of classic Developer. The Premium v2 Learn guidance says virtual network injection is available in the Premium v2 tier, uses API version `2024-05-01` or later, and provisions in minutes instead of the classic 45-70 minute VNet-injected Developer/Premium path. This keeps the gateway on the private-injection path the user asked for without the classic-tier wait.
+- APIM defaults to **StandardV2** for public Cowork ingress plus outbound VNet integration to private backends. Use PremiumV2 only when the gateway itself must be private-inbound; that mode is not reachable by Cowork without another public front door.
 - The jumpbox module was intentionally **not** ported. Cosmos seed data should be written later with either:
   - a one-off `az cosmosdb sql` CLI call, or
   - a one-off Container Apps Job run using the worker image.

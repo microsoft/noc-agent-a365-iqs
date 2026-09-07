@@ -4,7 +4,7 @@
 # =============================================================================
 
 # Foundry IQ knowledge base (Azure AI Search)
-azure-search-documents>=11.6.0b12
+azure-search-documents>=12.1.0b2
 
 # Fabric IQ (workspace/lakehouse/ontology + OneLake upload)
 microsoft-fabric-api>=0.1.0b1

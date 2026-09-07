@@ -12,6 +12,10 @@ helper scripts in this repo — every step below is either a CLI command or a
 `python scripts/*.py` script; the `bash` code fences are just for copy-paste
 convenience.
 
+The optional Copilot Cowork MCP channel has a separate, non-deploying runbook
+in [`COWORK_MCP.md`](COWORK_MCP.md). It reuses this deployment's Foundry
+project, specialists, `NocAgent`, run ledger, and Search corpus.
+
 > **Optional: automation service principal.** Every step below assumes an
 > interactive `az login`/`azd auth login` session. If you are instead driving
 > this guide from an unattended script/pipeline where an interactive browser
@@ -314,39 +318,22 @@ This is now automated by `scripts/create_workiq_toolbox.py` (called from
 and scopes `api://workiq.svc.cloud.microsoft/WorkIQAgent.Ask,offline_access`.
 
 Unlike the other three IQ connections, this one needs a **dedicated Entra
-app registration with a client secret** (the script does not create the app
-registration itself -- do that once per environment):
+app registration with a client secret**. Provision the entire admin-side chain
+idempotently with:
 
 ```bash
-# 1. Create the app registration with the WorkIQAgent.Ask delegated permission
-#    (resource appId fdcc1f02-fc51-4226-8753-f668596af7f7, scope id
-#    0b1715fd-f4bf-4c63-b16d-5be31f9847c2).
-az ad app create --display-name "noc-agent-workiq" --sign-in-audience AzureADMyOrg \
-  --required-resource-accesses '@workiq-required-resource-access.json'
-  # file contents:
-  # [{"resourceAppId":"fdcc1f02-fc51-4226-8753-f668596af7f7",
-  #   "resourceAccess":[{"id":"0b1715fd-f4bf-4c63-b16d-5be31f9847c2","type":"Scope"}]}]
-
-# 2. Create its service principal and a client secret.
-az ad sp create --id "<appId from step 1>"
-az ad app credential reset --id "<appId>" --display-name "noc-agent-workiq-secret" --years 1
-  # copy the returned "password" -- it is only shown once.
-
-# 3. Grant tenant admin consent for WorkIQAgent.Ask (requires Global Administrator).
-az ad app permission admin-consent --id "<appId>"
-
-# 4. Run the connection script with the app's credentials.
-$env:WORKIQ_ENTRA_APP_ID = "<appId>"
-$env:WORKIQ_ENTRA_APP_SECRET = "<client secret from step 2>"
-python scripts/create_workiq_toolbox.py
+python scripts/setup_workiq_entra_app.py
 ```
 
-The script's final step prints a Foundry-generated OAuth redirect URL
-(`https://global.consent.azure-apim.net/redirect/<id>`) -- **add this back**
-to the app registration's Authentication > Web platform Redirect URIs
-(`az ad app update --id <appId> --web-redirect-uris "<redirect url>"`) or the
-first-time consent flow will fail. Also grant the app's service principal
-`Azure AI Developer` at **project scope** (same pattern as step 9c below).
+The script creates or reuses `noc-agent-workiq`, grants the delegated
+`WorkIQAgent.Ask` permission tenant-wide, creates its service principal and
+one-year credential when needed, assigns `Azure AI Developer` at Foundry
+project scope, creates/updates the `WorkIQ` OAuth2 project connection, and
+registers Foundry's generated OAuth redirect URI back on the app. The client
+ID and secret are written only to the gitignored repo `.env`; the secret is
+also held by the encrypted Foundry connection. Running
+`scripts/create_workiq_toolbox.py` directly remains supported when those two
+environment values are already supplied.
 
 That connection is the *only* Work IQ resource `agent/agent.py` needs: it
 resolves Work IQ purely by looking up the `WorkIQ` project connection by name

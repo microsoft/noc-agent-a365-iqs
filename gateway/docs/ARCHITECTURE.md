@@ -10,7 +10,7 @@ build log). This doc is the "why", not the "what changed" — read PORTING_NOTES
 Teams / M365 Copilot → Azure Bot Service → App Service (agent/agent.py, MAF)
                                                 │  x-run-token / x-agent / x-step
                                                 ▼
-                                    APIM (PremiumV2, VNet-injected)
+                                    APIM (StandardV2, public ingress + VNet integration)
                               consumer ID • allowed-model • rate limit
                               validate-jwt(run_id) • llm-token-limit(run_id)
                               precall/postcall → run ledger (ignore-error)

@@ -50,8 +50,8 @@ def main():
         async def __aexit__(self, exc_type, exc, tb):
             return False
 
-        async def post(self, url, json):
-            calls.append({"url": url, "json": json, "timeout": self.timeout})
+        async def post(self, url, json, headers=None):
+            calls.append({"url": url, "json": json, "headers": headers, "timeout": self.timeout})
             return _FakeResponse({"run_token": f"token-for:{json['run_id']}"})
 
     original_client = agent.httpx.AsyncClient

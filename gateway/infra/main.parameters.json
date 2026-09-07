@@ -21,7 +21,7 @@
       "value": "${apimPublisherEmail}"
     },
     "apimSkuName": {
-      "value": "${apimSkuName=PremiumV2}"
+      "value": "${apimSkuName=StandardV2}"
     },
     "budgetAlertEmail": {
       "value": "${budgetAlertEmail}"
@@ -34,6 +34,33 @@
     },
     "adminUiImage": {
       "value": "${adminUiImage}"
+    },
+    "mcpHostImage": {
+      "value": "${mcpHostImage}"
+    },
+    "mcpFoundryProjectEndpoint": {
+      "value": "${mcpFoundryProjectEndpoint}"
+    },
+    "mcpFoundryModelDeploymentName": {
+      "value": "${mcpFoundryModelDeploymentName}"
+    },
+    "mcpFoundryProjectResourceId": {
+      "value": "${mcpFoundryProjectResourceId}"
+    },
+    "mcpSearchServiceResourceId": {
+      "value": "${mcpSearchServiceResourceId}"
+    },
+    "mcpCallerPrincipalId": {
+      "value": "${mcpCallerPrincipalId}"
+    },
+    "mcpCallerPrincipalType": {
+      "value": "${mcpCallerPrincipalType=Group}"
+    },
+    "mcpServerAppClientId": {
+      "value": "${mcpServerAppClientId}"
+    },
+    "mcpServerAudience": {
+      "value": "${mcpServerAudience}"
     },
     "entraTenantId": {
       "value": "${entraTenantId}"

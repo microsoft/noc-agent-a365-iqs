@@ -220,8 +220,9 @@ def _get_service_credential():
     every credential.get_token() call failed with
     `CredentialUnavailableError: Azure Developer CLI could not be found.`
     """
-    if "WEBSITE_INSTANCE_ID" in os.environ:
-        return ManagedIdentityCredential()
+    if "WEBSITE_INSTANCE_ID" in os.environ or "IDENTITY_ENDPOINT" in os.environ:
+        client_id = os.getenv("AZURE_CLIENT_ID")
+        return ManagedIdentityCredential(client_id=client_id) if client_id else ManagedIdentityCredential()
     return AzureDeveloperCliCredential(tenant_id=AZURE_TENANT_ID, process_timeout=60)
 
 
@@ -585,6 +586,9 @@ _current_run_token: contextvars.ContextVar[Optional[str]] = contextvars.ContextV
 _current_run_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
     "_current_run_id", default=None
 )
+_current_deadline: contextvars.ContextVar[Optional[float]] = contextvars.ContextVar(
+    "_current_deadline", default=None
+)
 _next_run_step: contextvars.ContextVar[Optional[Callable[[], str]]] = contextvars.ContextVar(
     "_next_run_step", default=None
 )
@@ -824,6 +828,9 @@ class NocAgent(AgentInterface):
                 else None
             )
             create_kwargs: dict = {"input": question, "extra_headers": extra_headers}
+            deadline = _current_deadline.get()
+            if deadline is not None:
+                create_kwargs["timeout"] = max(1.0, deadline - time.monotonic())
             if max_output_tokens is not None:
                 # Only set when the run ledger has actually asked for a steer-down --
                 # never impose a default cap that the agent didn't have before.

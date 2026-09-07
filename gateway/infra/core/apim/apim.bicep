@@ -85,6 +85,9 @@ param runLedgerBaseUrl string
 @description('Internal-ingress base URL (including https://) of the Admin UI Container App. Empty skips the proxy API.')
 param adminUiBaseUrl string = ''
 
+@description('Base URL of the Cowork MCP Container App. Empty skips the MCP APIs.')
+param mcpHostBaseUrl string = ''
+
 @description('Run-scoped token-per-minute limit enforced before the ledger hop.')
 param runTokensPerMinute int
 
@@ -115,10 +118,14 @@ var allowedModelsJson = string(allowedModels)
 // token left dangling where APIM then fails policy validation).
 var allowedModelsJsonXmlSafe = replace(allowedModelsJson, '"', '&quot;')
 var runLedgerBaseUrlNamedValueName = 'run-ledger-base-url'
+// Bootstrap deployments intentionally omit the run-ledger image. APIM still requires
+// syntactically valid non-empty backend/named-value URLs until the image pass updates it.
+var effectiveRunLedgerBaseUrl = empty(runLedgerBaseUrl) ? 'https://127.0.0.1' : runLedgerBaseUrl
 var runTokenSigningKeyNamedValueName = 'run-token-signing-key'
 var runLedgerBaseUrlNamedValueReference = '{{${runLedgerBaseUrlNamedValueName}}}'
 var runTokenSigningKeyNamedValueReference = '{{${runTokenSigningKeyNamedValueName}}}'
 var adminUiEnabled = !empty(adminUiBaseUrl)
+var mcpHostEnabled = !empty(mcpHostBaseUrl)
 // ponytail: container-apps.bicep's adminUiFqdn output already includes the https:// scheme
 // (unlike runLedger's bare-FQDN appFqdn output) -- use it as-is, don't double-prefix it.
 var adminUiBackendUrl = adminUiBaseUrl
@@ -151,7 +158,7 @@ var coreNamedValueEntries = [
   }
   {
     name: runLedgerBaseUrlNamedValueName
-    value: runLedgerBaseUrl
+    value: effectiveRunLedgerBaseUrl
   }
 ]
 var tierTpmNamedValues = [for tierName in items(rateTiers): {
@@ -293,12 +300,108 @@ resource runLedgerApiPolicy 'Microsoft.ApiManagement/service/apis/policies@2024-
   name: 'policy'
   properties: {
     format: 'xml'
-    value: '<policies><inbound><base />${jwtBlock}<set-backend-service base-url="${runLedgerBaseUrl}" /></inbound><backend><base /></backend><outbound><base /></outbound><on-error><base /></on-error></policies>'
+    value: '<policies><inbound><base />${jwtBlock}<set-backend-service base-url="${effectiveRunLedgerBaseUrl}" /></inbound><backend><base /></backend><outbound><base /></outbound><on-error><base /></on-error></policies>'
   }
 }
 
 resource runLedgerDiagnostics 'Microsoft.ApiManagement/service/apis/diagnostics@2024-05-01' = {
   parent: runLedgerApi
+  name: 'applicationinsights'
+  properties: {
+    loggerId: appInsightsLogger.id
+    sampling: {
+      samplingType: 'fixed'
+      percentage: 100
+    }
+    metrics: true
+    verbosity: 'information'
+    httpCorrelationProtocol: 'W3C'
+  }
+}
+
+resource mcpApi 'Microsoft.ApiManagement/service/apis@2024-05-01' = if (mcpHostEnabled) {
+  parent: apim
+  name: 'cowork-mcp'
+  properties: {
+    path: 'mcp'
+    displayName: 'Cowork MCP'
+    protocols: [
+      'https'
+    ]
+    subscriptionRequired: false
+  }
+}
+
+var mcpPassthroughMethods = [
+  'GET'
+  'POST'
+  'DELETE'
+  'OPTIONS'
+]
+
+resource mcpApiOperations 'Microsoft.ApiManagement/service/apis/operations@2024-05-01' = [for method in mcpPassthroughMethods: if (mcpHostEnabled) {
+  parent: mcpApi
+  name: 'mcp-${toLower(method)}'
+  properties: {
+    displayName: 'MCP ${method}'
+    method: method
+    urlTemplate: '/'
+  }
+}]
+
+resource mcpApiPolicy 'Microsoft.ApiManagement/service/apis/policies@2024-05-01' = if (mcpHostEnabled) {
+  parent: mcpApi
+  name: 'policy'
+  properties: {
+    format: 'xml'
+    value: '<policies><inbound><base /><set-backend-service base-url="${mcpHostBaseUrl}" /><rewrite-uri template="/mcp/" copy-unmatched-params="true" /></inbound><backend><base /></backend><outbound><base /></outbound><on-error><base /></on-error></policies>'
+  }
+}
+
+resource mcpMetadataApi 'Microsoft.ApiManagement/service/apis@2024-05-01' = if (mcpHostEnabled) {
+  parent: apim
+  name: 'cowork-mcp-protected-resource'
+  properties: {
+    path: '.well-known/oauth-protected-resource'
+    displayName: 'Cowork MCP protected resource metadata'
+    protocols: [
+      'https'
+    ]
+    subscriptionRequired: false
+  }
+}
+
+resource mcpMetadataGetOperation 'Microsoft.ApiManagement/service/apis/operations@2024-05-01' = if (mcpHostEnabled) {
+  parent: mcpMetadataApi
+  name: 'mcp-metadata-get'
+  properties: {
+    displayName: 'MCP protected resource metadata'
+    method: 'GET'
+    urlTemplate: '/mcp'
+  }
+}
+
+resource mcpMetadataOptionsOperation 'Microsoft.ApiManagement/service/apis/operations@2024-05-01' = if (mcpHostEnabled) {
+  parent: mcpMetadataApi
+  name: 'mcp-metadata-options'
+  properties: {
+    displayName: 'MCP protected resource metadata preflight'
+    method: 'OPTIONS'
+    urlTemplate: '/mcp'
+  }
+}
+
+resource mcpMetadataApiPolicy 'Microsoft.ApiManagement/service/apis/policies@2024-05-01' = if (mcpHostEnabled) {
+  parent: mcpMetadataApi
+  name: 'policy'
+  properties: {
+    format: 'xml'
+    value: '<policies><inbound><base /><set-backend-service base-url="${mcpHostBaseUrl}" /><rewrite-uri template="/.well-known/oauth-protected-resource/mcp" copy-unmatched-params="false" /></inbound><backend><base /></backend><outbound><base /></outbound><on-error><base /></on-error></policies>'
+  }
+}
+
+resource mcpDiagnostics 'Microsoft.ApiManagement/service/apis/diagnostics@2024-05-01' = if (mcpHostEnabled) {
+  parent: mcpApi
   name: 'applicationinsights'
   properties: {
     loggerId: appInsightsLogger.id
@@ -422,6 +525,10 @@ resource openAiApiPolicy 'Microsoft.ApiManagement/service/apis/policies@2024-05-
     format: 'xml'
     value: openaiPolicyRendered
   }
+  dependsOn: [
+    namedValues
+    runTokenSigningKeyNamedValue
+  ]
 }
 
 resource foundryApiPolicy 'Microsoft.ApiManagement/service/apis/policies@2024-05-01' = {
@@ -431,6 +538,10 @@ resource foundryApiPolicy 'Microsoft.ApiManagement/service/apis/policies@2024-05
     format: 'xml'
     value: foundryPolicyRendered
   }
+  dependsOn: [
+    namedValues
+    runTokenSigningKeyNamedValue
+  ]
 }
 
 resource openAiDiagnostics 'Microsoft.ApiManagement/service/apis/diagnostics@2024-05-01' = {
@@ -582,6 +693,8 @@ output apimName string = apim.name
 output gatewayUrl string = 'https://${apim.name}.azure-api.net'
 output ledgerGatewayUrl string = 'https://${apim.name}.azure-api.net/ledger'
 output adminUiGatewayUrl string = adminUiEnabled ? 'https://${apim.name}.azure-api.net/admin' : ''
+output mcpGatewayUrl string = mcpHostEnabled ? 'https://${apim.name}.azure-api.net/mcp' : ''
+output mcpProtectedResourceMetadataUrl string = mcpHostEnabled ? 'https://${apim.name}.azure-api.net/.well-known/oauth-protected-resource/mcp' : ''
 output appServiceSubscriptionKeySecretUri string = appServiceSubscriptionKeySecret.properties.secretUri
 output privateIpAddress string = !empty(apim.properties.privateIPAddresses) ? apim.properties.privateIPAddresses[0] : ''
 output identityPrincipalId string = apim.identity.principalId
