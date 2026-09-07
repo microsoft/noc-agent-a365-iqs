@@ -161,7 +161,10 @@ portal-generated identifier URI, adds the Teams OAuth consent redirect URI,
 and preauthorizes the Microsoft Enterprise token store client
 `ab3be6b7-f5df-413d-ac2d-abf1e3fd9c0b` for `noc.invoke`. Finally, redeploy the
 MCP host with `mcpServerAudience` set to the portal-generated Application ID
-URI so both Easy Auth and the application accept the token audience.
+URI so both Easy Auth and the application accept the token audience. Keep
+`MCP_SCOPE_URI` on the original `api://<resource-app-id>/noc.invoke` value:
+the requested scope and the resulting access-token audience are intentionally
+different values in this flow.
 
 ## 4. Build and deploy the MCP host
 

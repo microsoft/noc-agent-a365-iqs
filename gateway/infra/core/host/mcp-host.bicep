@@ -76,7 +76,7 @@ param appInsightsConnectionString string
 
 var mcpHostEnabled = !empty(mcpHostImage)
 var appName = mcpHostEnabled ? 'ca-mcphost-${nameSuffix}' : ''
-var scopeUri = '${mcpServerAudience}/${mcpRequiredScope}'
+var scopeUri = 'api://${mcpServerAppClientId}/${mcpRequiredScope}'
 var acrPullRoleDefinitionId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')
 
 resource mcpHostAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (mcpHostEnabled) {
