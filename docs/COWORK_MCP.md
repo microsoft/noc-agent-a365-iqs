@@ -13,10 +13,10 @@ until an operator runs the commands.
 
 | Setting | Value |
 |---|---|
-| Subscription | `c8a35425-69fe-4a90-bf45-4475c0adb74a` |
-| Tenant | `e1a20c31-5e84-4c35-9e3b-05be53530f30` |
-| Region | `eastus2` |
-| Resource group | `rg-noc-iq-demo` |
+| Subscription | `<subscription-id>` |
+| Tenant | `<tenant-id>` |
+| Region | `<azure-region>` |
+| Resource group | `<resource-group>` |
 | MCP route | `https://<apim-name>.azure-api.net/mcp` |
 | Protected-resource metadata | `https://<apim-name>.azure-api.net/.well-known/oauth-protected-resource/mcp` |
 | MCP scope value | `noc.invoke` |
@@ -54,8 +54,8 @@ Microsoft 365 Agents Toolkit CLI:
 
 ```powershell
 npm install -g @microsoft/m365agentstoolkit-cli
-az login --tenant e1a20c31-5e84-4c35-9e3b-05be53530f30
-az account set --subscription c8a35425-69fe-4a90-bf45-4475c0adb74a
+az login --tenant <tenant-id>
+az account set --subscription <subscription-id>
 ```
 
 The operator needs rights to deploy the gateway stack and assign RBAC. The
@@ -94,7 +94,7 @@ Run the idempotent setup script with the UAMI outputs:
 
 ```powershell
 python scripts/setup_cowork_mcp_entra.py `
-  --tenant-id e1a20c31-5e84-4c35-9e3b-05be53530f30 `
+  --tenant-id <tenant-id> `
   --mcp-uami-client-id "<mcpHostIdentityClientId>" `
   --mcp-uami-principal-id "<mcpHostIdentityPrincipalId>"
 ```
@@ -158,7 +158,7 @@ mcpServerAppClientId=<script mcpResourceAppClientId>
 mcpServerAudience=<script resourceUri>
 mcpRequiredScope=noc.invoke
 mcpToolTimeoutSeconds=28
-entraTenantId=e1a20c31-5e84-4c35-9e3b-05be53530f30
+entraTenantId=<tenant-id>
 ```
 
 This pass creates the externally-ingressed MCP Container App inside the
