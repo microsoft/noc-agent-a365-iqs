@@ -366,6 +366,7 @@ def main() -> None:
             "identifierUris": identifiers,
             "api": resource_api,
             "web": resource_web,
+            "groupMembershipClaims": "SecurityGroup",
             "requiredResourceAccess": resource_access,
         },
     )

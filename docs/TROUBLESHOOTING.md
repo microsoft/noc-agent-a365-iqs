@@ -490,6 +490,8 @@ found and fixed, plus one non-ARM consolidation:
 
 | Cowork shows `Connector access denied`; APIM records repeated `POST /mcp` 403 responses, but the MCP Container App process logs no request | The token audience and Entra resource app were correct, but Container Apps Easy Auth had an empty `defaultAuthorizationPolicy.allowedApplications`. Authentication succeeded far enough to reach APIM/Easy Auth, then the platform rejected the Microsoft Enterprise token-store client before forwarding to Uvicorn. | Add `ab3be6b7-f5df-413d-ac2d-abf1e3fd9c0b` to Easy Auth `defaultAuthorizationPolicy.allowedApplications`. This is separate from preauthorizing the same client for the `noc.invoke` delegated scope on the Entra resource app; both are required. |
 
+| Cowork's connect prompt reports `Authentication failed`; APIM and Uvicorn both show `POST /mcp` 401 | Easy Auth now accepted and forwarded the token, but the application rejected it because the MCP resource app had `groupMembershipClaims: null`. The app enforces the configured caller group from the token's `groups` claim, so an otherwise valid token without that claim fails closed. | Set the MCP resource app's `groupMembershipClaims` to `SecurityGroup` (automated by `setup_cowork_mcp_entra.py`). Confirm the user is a direct or transitive member of the configured caller group, then reconnect so Cowork obtains a new token containing the group claim. |
+
 The successful package must contain `manifest.json`, `color.png`, `outline.png`,
 `noc-mcp-tools.json` at the archive root, and the three skill directories.
 The generated `cowork/build/noc-cowork.zip` is a local build artifact and is

@@ -26,9 +26,11 @@ until an operator runs the commands.
 - `StreamableHTTPSessionManager(json_response=True, stateless=True)` serves
   `/mcp`. One `NocAgent` is initialized for the process lifespan.
 - Every `tools/call` reads the Easy Auth-validated bearer token, defensively
-  checks `tid`, `aud`, `oid`, `scp`, `exp`, and `nbf` without reimplementing
-  JWT signature validation, then resets all per-call context variables in a
-  `finally` block.
+  checks `tid`, `aud`, `oid`, `scp`, `exp`, `nbf`, and authorized group
+  membership without reimplementing JWT signature validation, then resets all
+  per-call context variables in a `finally` block. The MCP resource app must
+  set `groupMembershipClaims: SecurityGroup`; otherwise Entra omits `groups`
+  from the token and the application correctly returns `401`.
 - Easy Auth uses `AllowAnonymous` only so the ASGI app can emit the exact RFC
   9728 challenge for missing credentials. A call is accepted only when Easy
   Auth injected `X-MS-CLIENT-PRINCIPAL` and its tenant/object claims match the
