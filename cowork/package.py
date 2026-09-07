@@ -71,7 +71,8 @@ def main() -> None:
     with zipfile.ZipFile(args.output, "w", compression=zipfile.ZIP_DEFLATED) as package:
         package.writestr("manifest.json", json.dumps(manifest, indent=2) + "\n")
         for path in required_files:
-            package.write(path, path.relative_to(ROOT).as_posix())
+            archive_name = path.name if path.parent == ROOT / "tools" else path.relative_to(ROOT).as_posix()
+            package.write(path, archive_name)
     print(args.output.resolve())
 
 

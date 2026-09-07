@@ -31,7 +31,7 @@
         "remoteMcpServer": {
           "mcpServerUrl": "${MCP_URL}",
           "mcpToolDescription": {
-            "file": "./tools/noc-mcp-tools.json"
+            "file": "noc-mcp-tools.json"
           },
           "authorization": {
             "type": "OAuthPluginVault",
