@@ -478,3 +478,32 @@ found and fixed, plus one non-ARM consolidation:
 | Cosmos data-plane RBAC (`Cosmos DB Built-in Data Contributor` for worker/admin-ui) had to be granted with a manual `az cosmosdb sql role assignment create` after every fresh deploy | `gateway/infra/core/config/cosmos.bicep` already correctly implemented `readerPrincipals`/`writerPrincipals`/`configWriterPrincipals` as `sqlRoleAssignments` children — but `gateway/infra/main.bicep` never passed the worker/admin-ui managed identity principal ids into those params. Wiring bug, not a missing capability. | `main.bicep` now `concat()`s `identities.outputs.workerPrincipalId` into `writerPrincipals` and `identities.outputs.adminUiPrincipalId` into `configWriterPrincipals` automatically — safe unconditionally, since `identities.bicep` creates all 3 UAMIs regardless of whether the corresponding Container App/Job is enabled. |
 | Foundry project RBAC for Teams users (§9c: `Azure AI Developer`, `Foundry Project Runtime User`, `Cognitive Services OpenAI User`, `Cognitive Services User`) had to be granted with 4 manual `az role assignment create` calls per environment, on top of the one role (`Foundry Agent Consumer`) `rbac.bicep` already declared | `infra/core/ai/rbac.bicep` only ever declared `foundryAgentConsumerRole` for `teamsUsersPrincipalId` — the other 4 roles documented as required in DEPLOYMENT.md §9c were never added to the Bicep module | Added 4 more conditional (`!empty(teamsUsersPrincipalId)`) role-assignment resources to `rbac.bicep`, all scoped to `aiAccount::project` exactly like the pre-existing one. `az bicep build` compiles clean on both files. |
 | Fabric tenant consent (`DataAgent.Read.All`/`Execute.All`), Fabric workspace role assignment for the agent-user, Graph tenant consent (Work IQ's 7 scopes + optional `Mail.Send`), and Fabric workspace Viewer for the Teams-users group were each a separate hand-typed `az rest`/curl command across DEPLOYMENT.md §4b/§4d/§6a/§6b | None of these are ARM resource types (`oauth2PermissionGrants` and Fabric workspace `roleAssignments` are both Graph/Fabric-REST-only) — Bicep cannot express them. This is a genuine ceiling, not an oversight. | New `scripts/grant_agent_identity_access.py` consolidates all 4 into one idempotent script call: checks existing `oauth2PermissionGrants` and merges scopes (union) instead of clobbering on re-run, checks existing Fabric workspace role assignments before granting. DEPLOYMENT.md §4b/§4d/§6a/§6b/§9c rewritten to point at this script and the now-automatic Bicep roles instead of raw commands. The one irreducible manual step: `AGENT_IDENTITY_OBJECT_ID`/`AGENT_USER_OBJECT_ID` still can't be resolved before `a365 setup all` + a first live Teams turn have run (no pre-deployment lookup path found), so this script is necessarily a post-first-message step, not a pure `azd up`-time one. |
+
+## Cowork package validation and first install (2026-09-07)
+
+| Symptom | Root cause | Fix / verified result |
+|---|---|---|
+| `atk` was not recognized in PowerShell | Microsoft 365 Agents Toolkit CLI was not installed globally | Installed `@microsoft/m365agentstoolkit-cli`; verified `atk` version `1.1.16`. Use `atk auth login m365`, then `atk install --file-path <zip> --scope Personal`. |
+| Package rejected with `InvalidAgentConnector`: MCP tool description file `./tools/noc-mcp-tools.json` not found | The package service resolves the declared MCP description as a package-root file; a nested `tools/` archive path was not accepted | `cowork/manifest.json` now declares `noc-mcp-tools.json`; `cowork/package.py` places that file at the ZIP root. |
+| Package rejected because `mcpToolDescription` had no non-empty `tools` array | The MCP description schema is an object containing `tools: []`, not a single tool object | Wrapped `noc_investigate` in a top-level `tools` array. The package then installed successfully and returned a `TitleId` and `AppId`. |
+| Teams Developer Portal registration returned an OAuthPluginVault reference and a different Application ID URI | The portal creates the Microsoft 365 token-store registration independently of the MCP resource application's URI | Use the returned registration ID only as `OAuthPluginVault.referenceId`; keep the MCP resource scope as `api://<resource-app-id>/noc.invoke`. The portal-generated Application ID URI is not substituted into the MCP manifest or server audience. |
+
+The successful package must contain `manifest.json`, `color.png`, `outline.png`,
+`noc-mcp-tools.json` at the archive root, and the three skill directories.
+The generated `cowork/build/noc-cowork.zip` is a local build artifact and is
+ignored by Git; regenerate it after changing the manifest or tool description.
+
+## Teams RTI access failure after first live turn (2026-09-07)
+
+A Teams turn initially reported HTTP 403 from the Fabric RTI MCP endpoint while
+enumerating tools. The persisted Foundry connection and endpoint were correct;
+the missing permission was Fabric workspace access for the Agent 365-generated
+agent-user identity, not the human Teams user's group membership.
+
+After the first live turn, Application Insights `AppTraces` exposed the
+`agentic_user_id` and `agent_app_instance_id`. Resolving those IDs through
+Microsoft Graph and running `scripts/grant_agent_identity_access.py` granted the
+agent-user `Contributor` on the Fabric workspace. The Teams-users group already
+had `Viewer`, and Fabric/Graph delegated consent already existed. This is now
+verified in the Fabric workspace role assignments. Wait for RBAC propagation,
+then start a new Teams conversation before retrying RTI queries.

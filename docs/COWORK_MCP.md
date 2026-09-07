@@ -195,7 +195,9 @@ python cowork/package.py `
 
 The output is `cowork/build/noc-cowork.zip`. The script resolves placeholders
 in memory, validates the URL/GUID, and packages `manifest.json`, both icons,
-the matching tool description, and all three `SKILL.md` folders.
+the matching tool description, and all three `SKILL.md` folders. The tool
+description is written as `noc-mcp-tools.json` at the ZIP root (not under a
+`tools/` directory), and must contain a non-empty top-level `tools` array.
 
 For a personal sideload:
 
