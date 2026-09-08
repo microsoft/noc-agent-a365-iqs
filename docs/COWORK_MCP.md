@@ -1,5 +1,8 @@
 # Copilot Cowork MCP channel
 
+For the numbered component-level request flow, specialist/tool mapping, and
+direct Fabric Graph exception, see [Cowork sequence diagrams](COWORK_SEQUENCE.md).
+
 This channel exposes the existing in-process `NocAgent._agent` as one
 read-only MCP tool, `noc_investigate`, without changing the Teams/A365
 channel. The canonical public endpoint is APIM `/mcp`; APIM is a transparent
