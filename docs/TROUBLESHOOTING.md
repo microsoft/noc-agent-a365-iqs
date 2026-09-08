@@ -12,6 +12,32 @@ here so `fix-loop` doesn't have to rediscover them.
 | Fabric Data Agent works in its own Fabric test pane, but Cowork says every topology lookup timed out | MCP host request timestamps showed an initial 12-second call followed by repeated requests at the 28–31-second boundary. The focused Cowork skill was still invoking the full NOC orchestrator first; that model then invoked the topology Prompt Agent, which invoked the Fabric Data Agent. The extra outer model turn consumed most of Cowork's sub-30-second tool budget. | Excess orchestration latency, not a Fabric query failure. | Focused skill prompts are now recognized in `mcp_server.py` and routed directly to the matching persisted specialist (`fabric_iq`, `foundry_iq`, `web_iq`, `work_iq`, or `rti_iq`). Broad and combined investigations still use the full orchestrator. |
 | Fabric Data Agent succeeds in Fabric, but both Teams and Cowork receive `backend rejected my access token` from the persisted topology Prompt Agent | Reproduced by invoking `noc-topology-agent` directly through Foundry with an admin credential, proving this is not a Teams/Cowork token-cache issue. The direct Fabric Graph GQL API succeeds with the same graph and returns the expected topology. Added `GraphInstance.Read.All`/`Execute.All` delegated consent to both the A365 Agent Identity and Cowork MCP resource app, but the preview Foundry → Data Agent → Graph token hop continued to reject its internally acquired token. | Preview connector bug at the nested Foundry/Data-Agent graph-token exchange. The graph, data, caller auth, and GQL are healthy. | Focused link blast-radius queries now bypass the broken nested connector and execute deterministic read-only GQL directly from the App Service or MCP-host managed identity. Both identities have Fabric workspace Contributor access. The templates return the link endpoints, conduit, shared links, and Service→MPLSPath→TransportLink/SLA exposure. Deployed Teams at `https://app-n2tjinbhnbln6.azurewebsites.net` and Cowork image `noc-mcp:20260908-2` as revision `ca-mcphost-aigw-dev-eus2--0000006`. The persisted Data Agent remains available as fallback for non-template topology questions. |
 
+### 2026-09-08: Cowork timeout followed by misleading topology access failure
+
+At 09:30 UTC, the deployed Cowork host acquired its Fabric managed-identity token,
+but its direct Graph request exceeded the 20-second HTTP read timeout. The broad
+exception handler then fell back to the persisted topology Data Agent, which
+still had the previously documented nested-token failure. The final access-error
+answer therefore obscured the original timeout; it did not establish that the
+host managed identity needed new permissions.
+
+Both hosts had the correct workspace/GraphModel settings. Teams completed all
+three direct Graph queries with HTTP 200 at 09:37 UTC in about 3.46 seconds.
+A diagnostic invocation inside Cowork revision `0000006` reproduced
+`httpx.ReadTimeout`. Subsequent calls from that same container and UAMI returned
+HTTP 200 for GraphModel metadata and GQL. The exact Cowork blast-radius prompt,
+through its deployed direct-specialist routing, then returned the full result
+twice in 2.56 and 2.11 seconds: ACME (450 users, GOLD, $50,000/hour), BigBank
+(1,200 users, SILVER, $25,000/hour), and shared link `LINK-SYD-MEL-FIBRE-02` in
+`CONDUIT-SYD-MEL-INLAND`.
+
+No credentials, permissions, networking, images, or runtime settings were changed
+during this diagnosis. Direct Graph execution recovered, but the cause of the
+intermittent read timeout is not established; do not label it a proven cold-start
+issue or claim a permanent fix. A fresh Cowork conversation remains the
+end-to-end acceptance step. If it recurs, distinguish the direct request's
+exception type/latency from the fallback connector error before reauthorizing.
+
 ## Reference: manual node/edge build table for `NOCNetworkOntology`'s graph canvas
 
 The Ontology item's schema and data bindings were correct all along (see
