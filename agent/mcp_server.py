@@ -224,6 +224,22 @@ async def _list_noc_tools(agent_tool: AgentMCPTool) -> list[types.Tool]:
     return [tool.model_copy(update={"annotations": annotations}) for tool in await agent_tool.list_tools()]
 
 
+def _direct_specialist_for_task(task: str) -> str | None:
+    """Route focused Cowork skills directly, avoiding an extra orchestrator turn."""
+    normalized = task.casefold()
+    routes = (
+        ("rti_iq", ("optical reading", "loss of light", "sensor", "suppressed", "telemetry timeline")),
+        ("work_iq", ("on-call", "on call", "incident bridge", "bridge chatter")),
+        ("web_iq", ("public vendor advisory", "status-page", "status page", "carrier advisory")),
+        ("foundry_iq", ("runbook", "prior ticket", "happened before", "ticket history")),
+        ("fabric_iq", ("blast radius", "shared conduit", "physical conduit", "topology")),
+    )
+    for specialist, phrases in routes:
+        if any(phrase in normalized for phrase in phrases):
+            return specialist
+    return None
+
+
 def _timeout_result() -> types.CallToolResult:
     return types.CallToolResult(
         content=[
@@ -289,11 +305,21 @@ async def _invoke_noc_tool(
             reservation_id = _apply_precall_decision(decision)
 
         call_started = True
+        specialist = _direct_specialist_for_task(str(task))
         try:
-            result = await asyncio.wait_for(
-                agent_tool.call_tool(name, arguments),
-                timeout=timeout_seconds,
-            )
+            if specialist:
+                answer = await asyncio.wait_for(
+                    noc_agent._call_specialist(specialist, str(task)),
+                    timeout=timeout_seconds,
+                )
+                result: list[types.ContentBlock] | types.CallToolResult = [
+                    types.TextContent(type="text", text=answer)
+                ]
+            else:
+                result = await asyncio.wait_for(
+                    agent_tool.call_tool(name, arguments),
+                    timeout=timeout_seconds,
+                )
         except asyncio.TimeoutError:
             if run_token:
                 await _run_ledger_postcall(run_id, reservation_id, failed=True)

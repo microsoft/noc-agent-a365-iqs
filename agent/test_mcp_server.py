@@ -51,6 +51,16 @@ class FakeNocAgentNoLedger(FakeNocAgent):
         return None
 
 
+class FakeDirectNocAgent(FakeNocAgent):
+    def __init__(self):
+        super().__init__()
+        self.specialist_call = None
+
+    async def _call_specialist(self, specialist, question):
+        self.specialist_call = (specialist, question)
+        return "direct specialist result"
+
+
 class FakeAgentTool:
     def __init__(self):
         self.observed = None
@@ -71,6 +81,11 @@ class FakeAgentTool:
 class SlowAgentTool:
     async def call_tool(self, _name, _arguments):
         await asyncio.sleep(1)
+
+
+class UnexpectedAgentTool:
+    async def call_tool(self, _name, _arguments):
+        raise AssertionError("Focused tasks must bypass the outer orchestrator tool.")
 
 
 async def main():
@@ -105,6 +120,10 @@ async def main():
     assert declared_tool["name"] == tool.name
     assert declared_tool["description"] == tool.description
     assert declared_tool["inputSchema"] == tool.inputSchema
+    assert mcp_server._direct_specialist_for_task("Assess blast radius and shared conduit") == "fabric_iq"
+    assert mcp_server._direct_specialist_for_task("Show optical readings and suppressed alerts") == "rti_iq"
+    assert mcp_server._direct_specialist_for_task("What does the runbook say?") == "foundry_iq"
+    assert mcp_server._direct_specialist_for_task("Investigate an unspecified incident") is None
 
     noc_agent = FakeNocAgent()
     agent_tool = FakeAgentTool()
@@ -116,10 +135,10 @@ async def main():
 
     original_precall = mcp_server._run_ledger_precall
     original_postcall = mcp_server._run_ledger_postcall
-    precall_kwargs = {}
+    precall_calls = []
 
     async def fake_precall(**kwargs):
-        precall_kwargs.update(kwargs)
+        precall_calls.append(kwargs)
         return {"action": "allow", "reservation_id": "reservation"}
 
     mcp_server._run_ledger_precall = fake_precall
@@ -135,16 +154,33 @@ async def main():
             "foundry-obo-token",
             1,
         )
+        direct_noc_agent = FakeDirectNocAgent()
+        direct_result = await mcp_server._invoke_noc_tool(
+            direct_noc_agent,
+            UnexpectedAgentTool(),
+            "noc_investigate",
+            {"task": "Assess the blast radius and shared conduit for LINK-1"},
+            authenticated,
+            "request-direct",
+            "foundry-obo-token",
+            1,
+        )
     finally:
         mcp_server._run_ledger_precall = original_precall
         mcp_server._run_ledger_postcall = original_postcall
 
     assert result[0].text == "mock result"
+    assert direct_result[0].text == "direct specialist result"
+    assert direct_noc_agent.specialist_call == (
+        "fabric_iq",
+        "Assess the blast radius and shared conduit for LINK-1",
+    )
     assert noc_agent.run_token_args[0] == "user-oid"
     assert noc_agent.run_token_args[1].startswith("request-42-")
     assert agent_tool.observed["name"] == "noc_investigate"
     assert agent_tool.observed["arguments"] == {"task": "Investigate LINK-1"}
-    assert precall_kwargs["prompt"] == "Investigate LINK-1"
+    assert precall_calls[0]["prompt"] == "Investigate LINK-1"
+    assert precall_calls[1]["prompt"] == "Assess the blast radius and shared conduit for LINK-1"
     assert agent_tool.observed["user_token"] == "foundry-obo-token"
     assert agent_tool.observed["run_id"].startswith("run:user-oid:request-42-")
     assert agent_tool.observed["run_token"] == "run-token"
