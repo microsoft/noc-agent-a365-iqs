@@ -443,6 +443,8 @@ def build_noc_ontology_definition(workspace_id: str, lakehouse_id: str) -> Ontol
         (105, "COVERS", 6, "ServiceId", sla_props["SLAPolicyId"], 5, "ServiceId", service_props["ServiceId"], "DimSLAPolicy"),
         # Advisory affects a router
         (106, "AFFECTS", 8, "RouterId", advisory_props["AdvisoryId"], 1, "RouterId", router_props["RouterId"], "FactAdvisoryMapping"),
+        # Enterprise services depend on MPLS paths; non-MPLS rows do not match a PathId.
+        (107, "DEPENDS_ON", 5, "ServiceId", service_props["ServiceId"], 7, "DependsOnId", mpls_props["PathId"], "FactServiceDependency"),
     ]
     for rel_id, rel_name, src_id, src_col, src_prop, tgt_id, tgt_col, tgt_prop, table in relationships:
         parts.extend(

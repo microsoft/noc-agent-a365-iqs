@@ -174,8 +174,9 @@ echo "AGENT_USER_OBJECT_ID=<agent-user object id>" >> .env
 python scripts/grant_agent_identity_access.py
 ```
 
-This grants the Fabric tenant admin-consent (`DataAgent.Read.All`/
-`DataAgent.Execute.All`) and adds the agent-user identity as a `Contributor`
+This grants the Fabric tenant admin-consent (`DataAgent.Read.All`,
+`DataAgent.Execute.All`, `GraphInstance.Read.All`, and
+`GraphInstance.Execute.All`) and adds the agent-user identity as a `Contributor`
 on the Fabric workspace — safely re-runnable any time (it checks existing
 grants/role assignments before writing).
 

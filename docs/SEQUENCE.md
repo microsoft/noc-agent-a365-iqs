@@ -30,7 +30,7 @@ sequenceDiagram
     Fab-->>Op: FABRIC_ONTOLOGY_ID, ontology UI + MCP URLs
 
     Op->>Fab: python scripts/create_fabric_graph.py
-    Fab->>Fab: Populate the ontology's GraphModel with 8 nodes + 8 edges
+    Fab->>Fab: Populate the ontology's GraphModel with 8 nodes + 9 edges
     Op->>Fab: python scripts/create_fabric_data_agent.py
     Fab->>Fab: Create/publish Fabric Data Agent over the ontology
     Fab-->>Op: FABRIC_DATA_AGENT_MCP_URL

@@ -48,7 +48,10 @@ FABRIC_BASE = "https://api.fabric.microsoft.com/v1"
 FABRIC_APP_ID = "00000009-0000-0000-c000-000000000000"  # api://api.fabric.microsoft.com
 GRAPH_APP_ID = "00000003-0000-0000-c000-000000000000"  # Microsoft Graph
 
-FABRIC_SCOPES = "DataAgent.Read.All DataAgent.Execute.All"
+FABRIC_SCOPES = (
+    "DataAgent.Read.All DataAgent.Execute.All "
+    "GraphInstance.Read.All GraphInstance.Execute.All"
+)
 WORKIQ_GRAPH_SCOPES = [
     "Sites.Read.All",
     "Mail.Read",

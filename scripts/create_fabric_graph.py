@@ -106,6 +106,7 @@ EDGE_SPECS = [
     ("AMPLIFIES", "AmplifierSite", "TransportLink", "FactAmplifierMapping", ["SiteId"], ["LinkId"], None),
     ("COVERS", "SLAPolicy", "Service", "DimSLAPolicy", ["SLAPolicyId"], ["ServiceId"], None),
     ("AFFECTS", "Advisory", "CoreRouter", "FactAdvisoryMapping", ["AdvisoryId"], ["RouterId"], None),
+    ("DEPENDS_ON", "Service", "MPLSPath", "FactServiceDependency", ["ServiceId"], ["DependsOnId"], None),
     # FactMPLSPathHops is polymorphic (NodeId is either a RouterId or a LinkId, per
     # NodeType) -- split into two filtered edges so MPLSPath actually connects to
     # the graph. Without this, MPLSPath is a fully disconnected node (found via
