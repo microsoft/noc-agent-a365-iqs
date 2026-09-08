@@ -200,7 +200,8 @@ resource writerRoleAssignments 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAss
   properties: {
     principalId: principal.principalId
     roleDefinitionId: dataContributorRoleDefinitionId
-    scope: sqlDatabase.id
+    // Cosmos RBAC scope is the account ARM ID plus the native data-plane path.
+    scope: '${account.id}/dbs/${databaseName}'
   }
 }]
 
@@ -210,7 +211,7 @@ resource configWriterRoleAssignments 'Microsoft.DocumentDB/databaseAccounts/sqlR
   properties: {
     principalId: principal.principalId
     roleDefinitionId: dataContributorRoleDefinitionId
-    scope: configContainer.id
+    scope: '${account.id}/dbs/${databaseName}/colls/${configContainerName}'
   }
 }]
 

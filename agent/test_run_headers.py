@@ -4,6 +4,7 @@ Run directly: `python agent/test_run_headers.py`.
 """
 
 import asyncio
+import hashlib
 import os
 
 os.environ.setdefault("FOUNDRY_PROJECT_ENDPOINT", "https://example.invalid/api/projects/dummy")
@@ -50,8 +51,8 @@ def main():
         async def __aexit__(self, exc_type, exc, tb):
             return False
 
-        async def post(self, url, json):
-            calls.append({"url": url, "json": json, "timeout": self.timeout})
+        async def post(self, url, json, headers=None):
+            calls.append({"url": url, "json": json, "headers": headers, "timeout": self.timeout})
             return _FakeResponse({"run_token": f"token-for:{json['run_id']}"})
 
     original_client = agent.httpx.AsyncClient
@@ -70,6 +71,25 @@ def main():
         _check("different activity triggers a different token", third != first)
         _check("ledger payload uses the deterministic run id", calls[0]["json"]["run_id"] == run_id)
 
+        calls.clear()
+        prompt = "Investigate LINK-SYD-MEL-FIBRE-01"
+        asyncio.run(
+            agent._run_ledger_precall(
+                run_id="run-1",
+                agent_name="planner",
+                step="1",
+                model="gpt-5.4",
+                est_input_tokens=10,
+                prompt=prompt,
+            )
+        )
+        _check(
+            "precall sends the required prompt hash",
+            calls[0]["json"]["prompt_hash"] == hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+        )
+        asyncio.run(agent._run_ledger_postcall("run-1", None, failed=True))
+        _check("postcall skips when precall produced no reservation", len(calls) == 1)
+
         class ExplodingAsyncClient:
             def __init__(self, *args, **kwargs):
                 raise AssertionError("RUN_LEDGER_BASE_URL unset should skip the ledger call")
@@ -86,7 +106,7 @@ def main():
         else:
             os.environ["RUN_LEDGER_BASE_URL"] = original_base_url
 
-    print("PASS: test_run_headers.py self-check passed (9 checks)")
+    print("PASS: test_run_headers.py self-check passed (11 checks)")
 
 
 if __name__ == "__main__":

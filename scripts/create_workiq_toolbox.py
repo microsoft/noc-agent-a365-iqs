@@ -87,12 +87,13 @@ def put_workiq_connection(
     tenant_id: str,
     client_id: str,
     client_secret: str,
+    force_update: bool = False,
 ) -> str | None:
     """Create/update the Work IQ project connection with authType=OAuth2.
 
-    Returns the Foundry-generated OAuth redirect URL when the connection is
-    freshly created (still needs to be added to the Entra app registration),
-    or None if the connection already existed and was left untouched.
+    Returns the Foundry-generated OAuth redirect URL when available, including
+    for an existing matching connection, so callers can idempotently register it
+    on the Entra application.
     """
     credential = AzureDeveloperCliCredential(tenant_id=tenant_id)
     try:
@@ -111,17 +112,19 @@ def put_workiq_connection(
     existing = httpx.get(url, headers=headers, timeout=60)
     if existing.status_code == 200:
         props = existing.json().get("properties", {})
+        # The ARM GET response deliberately redacts OAuth credentials, so the
+        # caller must force an update when the app or secret changed.
         if (
-            props.get("authType") == "OAuth2"
+            not force_update
+            and props.get("authType") == "OAuth2"
             and props.get("target") == WORKIQ_TARGET
-            and (props.get("Credentials", {}) or {}).get("ClientId") == client_id
         ):
             log_message(
                 f"[OK] Foundry connection '{CONNECTION_NAME}' already exists with the correct "
                 "OAuth2 configuration -- skipping PUT (the account-rp preview connections API "
                 "is flaky on repeat PUTs to an existing connection)."
             )
-            return None
+            return props.get("redirectUrl") or props.get("oauthRedirectUrl")
 
     authorize_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/authorize"
     token_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
@@ -191,6 +194,7 @@ def main() -> None:
         tenant_id=tenant_id,
         client_id=client_id,
         client_secret=client_secret,
+        force_update=True,
     )
 
     if redirect_uri:

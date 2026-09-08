@@ -1,11 +1,11 @@
-"""Create and publish a Fabric data agent backed by the NOC network ontology (Fabric IQ).
+"""Create and publish a Fabric data agent backed by the NOC GraphModel.
 
 Adapted from microsoft/iqdeepdive's infra/create-fabric-data-agent.py. Deliberately
 uses the raw Fabric REST API rather than fabric-data-agent-sdk, which pins
 conflicting azure-identity/httpx versions and fails outside a Fabric notebook
-(see iqdeepdive/AGENTS.md). Only a single data source is wired here -- the NOC
-network ontology created by scripts/create_fabric_ontology.py -- since this
-demo has no review graph or web-analytics semantic model.
+(see iqdeepdive/AGENTS.md). The GraphModel generated for NOCNetworkOntology is
+used directly because it supports NL2GQL instructions and executes against the
+same graph that is independently verifiable through Fabric's GQL Query API.
 """
 
 import os
@@ -22,34 +22,35 @@ FABRIC_API_URL = "https://api.fabric.microsoft.com"
 FABRIC_SCOPE = f"{FABRIC_API_URL}/.default"
 OPERATION_TIMEOUT_SECONDS = 300
 
-AI_INSTRUCTIONS = """Use the NOC network ontology to answer questions about network
-topology and blast radius: core routers, transport links, physical conduits,
-amplifier sites, services, SLA policies, MPLS paths, and vendor advisories. A
-TransportLink ORIGINATES_AT and TERMINATES_AT a CoreRouter. A TransportLink
-RIDES_ON a PhysicalConduit -- two links can share the same conduit even if they
-appear independent, which is the key non-obvious blast-radius risk to surface.
-An AmplifierSite AMPLIFIES a TransportLink. An SLAPolicy COVERS a Service. An
-Advisory AFFECTS a CoreRouter. Always report which services and SLA policies
+AI_INSTRUCTIONS = """Use the NOC topology graph to answer questions about
+network topology and blast radius: core routers, transport links, physical
+conduits, amplifier sites, services, SLA policies, MPLS paths, and vendor
+advisories. Query the graph for every factual answer and never invent entity
+identifiers. A TransportLink ORIGINATES_AT and TERMINATES_AT a CoreRouter. A
+TransportLink RIDES_ON a PhysicalConduit -- two links can share the same
+conduit even if they appear independent, which is the key non-obvious
+blast-radius risk to surface. Always report which services and SLA policies
 are exposed when a link or conduit fails, and flag any conduit shared by more
 than one link explicitly.
 """
 
-ONTOLOGY_DESCRIPTION = (
-    "NOC network topology: core routers, transport links, physical conduits, "
-    "amplifier sites, services, SLA policies, MPLS paths, and vendor advisories."
+GRAPH_DESCRIPTION = (
+    "Queryable NOC topology graph for blast-radius, shared-conduit, dependency, "
+    "and SLA-exposure analysis."
 )
-# NB: property names are case-sensitive, and NL2GQL will invent a wrong ORDER BY
-# alias unless told to preserve the exact RETURN alias -- few-shot examples are
-# not supported for Ontology sources (only Graph sources), so this must stay
-# instruction-only.
-ONTOLOGY_INSTRUCTIONS = """Generate Fabric Ontology GQL. Property names are
-case-sensitive. When sorting a projected expression, use its RETURN alias
-exactly; never invent a different capitalization or name. CoreRouter uses
-RouterId and City. TransportLink uses LinkId, SourceRouterId, and
-TargetRouterId. PhysicalConduit uses ConduitId and RouteDescription.
-TransportLink RIDES_ON PhysicalConduit; TransportLink ORIGINATES_AT and
-TERMINATES_AT CoreRouter; AmplifierSite AMPLIFIES TransportLink; SLAPolicy
-COVERS Service; Advisory AFFECTS CoreRouter."""
+GRAPH_INSTRUCTIONS = """Query this Fabric GraphModel using GQL. Use exact,
+case-sensitive labels, edges, and properties. Nodes:
+CoreRouter(RouterId,City,Region,Vendor,Model,FirmwareVersion),
+TransportLink(LinkId,LinkType,CapacityGbps,SourceRouterId,TargetRouterId),
+PhysicalConduit(ConduitId,RouteDescription,MaterialType,InstalledYear),
+AmplifierSite(SiteId,Location), Service(ServiceId,ServiceType,CustomerName,
+CustomerCount,ActiveUsers), SLAPolicy(SLAPolicyId,ServiceId,AvailabilityPct,
+MaxLatencyMs,PenaltyPerHourUSD,Tier), MPLSPath(PathId,PathType), and
+Advisory(AdvisoryId,VendorName,Severity,Title). Edges: ORIGINATES_AT,
+TERMINATES_AT, RIDES_ON, AMPLIFIES, COVERS, AFFECTS, TRAVERSES_ROUTER, and
+TRAVERSES_LINK. Use FILTER rather than WHERE. Preserve each RETURN alias
+exactly in ORDER BY. Never invent identifiers or return example values; answer
+only from executed query results."""
 
 load_dotenv(ENV_PATH, override=True)
 
@@ -146,6 +147,28 @@ def list_data_agents(client: httpx.Client, workspace_id: str) -> list[dict]:
     return response.json().get("value", [])
 
 
+def find_graph_model(client: httpx.Client, workspace_id: str, ontology_name: str) -> dict:
+    """Find the GraphModel generated for the configured ontology."""
+    response = request(
+        client,
+        "GET",
+        f"/v1/workspaces/{workspace_id}/items",
+        expected_statuses={httpx.codes.OK},
+    )
+    prefix = f"{ontology_name}_graph_"
+    matches = [
+        item
+        for item in response.json().get("value", [])
+        if item.get("type") == "GraphModel"
+        and item.get("displayName", "").startswith(prefix)
+    ]
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"Expected one GraphModel named '{prefix}*', found {len(matches)}."
+        )
+    return matches[0]
+
+
 def get_or_create_data_agent(
     client: httpx.Client,
     name: str,
@@ -184,6 +207,26 @@ def list_staging_datasources(client: httpx.Client, base_url: str) -> list[dict]:
         expected_statuses={httpx.codes.OK},
     )
     return response.json().get("value", [])
+
+
+def remove_other_datasources(
+    client: httpx.Client,
+    base_url: str,
+    retained_item_id: str,
+) -> None:
+    """Remove stale sources so the agent cannot route to an unqueryable ontology."""
+    for source in list_staging_datasources(client, base_url):
+        if source.get("itemReference", {}).get("itemId") == retained_item_id:
+            continue
+        source_id = source["id"]
+        print(f"Removing stale data source {source_id}...")
+        response = request(
+            client,
+            "DELETE",
+            f"{base_url}/staging/datasources/{source_id}",
+            expected_statuses={httpx.codes.OK, httpx.codes.NO_CONTENT, httpx.codes.ACCEPTED},
+        )
+        wait_for_operation(client, response)
 
 
 def add_fabric_item_datasource(
@@ -264,7 +307,7 @@ def main() -> None:
     """Create or update the NOC network ontology data agent and publish it."""
     tenant_id = require_env("FABRIC_TENANT_ID")
     workspace_id = require_env("FABRIC_WORKSPACE_ID")
-    ontology_id = require_env("FABRIC_ONTOLOGY_ID")
+    ontology_name = os.getenv("FABRIC_ONTOLOGY_NAME", "NOCNetworkOntology")
     data_agent_name = os.getenv("FABRIC_DATA_AGENT_NAME", "NOCNetworkDataAgent")
 
     token = get_fabric_token(tenant_id)
@@ -286,20 +329,23 @@ def main() -> None:
         )
         wait_for_operation(client, settings_response)
 
+        graph_model = find_graph_model(client, workspace_id, ontology_name)
+        graph_model_id = graph_model["id"]
+        remove_other_datasources(client, base_url, graph_model_id)
         add_fabric_item_datasource(
             client,
             base_url,
             workspace_id,
-            ontology_id,
-            "NOC network ontology",
+            graph_model_id,
+            "NOC topology GraphModel",
         )
         configure_datasource(
             client,
             base_url,
-            ontology_id,
-            "ontology",
-            ONTOLOGY_DESCRIPTION,
-            ONTOLOGY_INSTRUCTIONS,
+            graph_model_id,
+            "graph",
+            GRAPH_DESCRIPTION,
+            GRAPH_INSTRUCTIONS,
         )
 
         print("Publishing the Fabric data agent...")
@@ -322,6 +368,7 @@ def main() -> None:
         f"/dataagents/{data_agent_id}/agent"
     )
     values = {
+        "FABRIC_GRAPH_MODEL_ID": graph_model_id,
         "FABRIC_DATA_AGENT_ID": data_agent_id,
         "FABRIC_DATA_AGENT_MCP_URL": mcp_url,
         "FABRIC_DATA_AGENT_NAME": data_agent_name,

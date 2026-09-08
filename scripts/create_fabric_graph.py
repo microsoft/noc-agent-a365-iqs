@@ -106,6 +106,7 @@ EDGE_SPECS = [
     ("AMPLIFIES", "AmplifierSite", "TransportLink", "FactAmplifierMapping", ["SiteId"], ["LinkId"], None),
     ("COVERS", "SLAPolicy", "Service", "DimSLAPolicy", ["SLAPolicyId"], ["ServiceId"], None),
     ("AFFECTS", "Advisory", "CoreRouter", "FactAdvisoryMapping", ["AdvisoryId"], ["RouterId"], None),
+    ("DEPENDS_ON", "Service", "MPLSPath", "FactServiceDependency", ["ServiceId"], ["DependsOnId"], None),
     # FactMPLSPathHops is polymorphic (NodeId is either a RouterId or a LinkId, per
     # NodeType) -- split into two filtered edges so MPLSPath actually connects to
     # the graph. Without this, MPLSPath is a fully disconnected node (found via
@@ -150,7 +151,7 @@ def build_definition_parts(workspace_id: str, lakehouse_id: str) -> list[dict]:
 
     tables = sorted({table for _, table, _, _ in NODE_SPECS} | {table for _, _, _, table, _, _, _ in EDGE_SPECS})
     data_sources = [
-        {"name": table, "type": "DeltaTable", "properties": {"path": f"{onelake_prefix}/{table}"}}
+        {"name": table, "type": "DeltaTable", "properties": {"referenceName": "lakehouse", "path": f"Tables/{table}"}}
         for table in tables
     ]
 
@@ -207,9 +208,8 @@ def build_definition_parts(workspace_id: str, lakehouse_id: str) -> list[dict]:
         "modelLayout": {
             "positions": {
                 **{alias: {"x": i * 200, "y": 0} for i, (alias, *_r) in enumerate(NODE_SPECS)},
-                **{name: {"x": i * 200, "y": 200} for i, (name, *_r) in enumerate(EDGE_SPECS)},
             },
-            "styles": {alias: {"size": 30} for alias, *_r in NODE_SPECS + [(n,) for n, *_r in EDGE_SPECS]},
+            "styles": {alias: {"size": 30} for alias, *_r in NODE_SPECS},
             "pan": {"x": 0, "y": 0},
             "zoomLevel": 1,
         },
@@ -218,6 +218,7 @@ def build_definition_parts(workspace_id: str, lakehouse_id: str) -> list[dict]:
     return [
         {"path": "dataSources.json", "payload": to_b64({
             "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/graphIndex/definition/dataSources/1.1.0/schema.json",
+            "itemReferences": [{"name": "lakehouse", "item": {"workspaceId": workspace_id, "itemId": lakehouse_id}}],
             "dataSources": data_sources,
         }), "payloadType": "InlineBase64"},
         {"path": "graphType.json", "payload": to_b64(graph_type), "payloadType": "InlineBase64"},

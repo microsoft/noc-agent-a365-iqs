@@ -16,6 +16,8 @@ directly from `infra/core/ai/rbac.bicep`, `gateway/infra/core/**/*.bicep`,
 | Entra **Agent Identity** + auto-provisioned **agent-user** (`#microsoft.graph.agentUser`, e.g. `nocagent@<tenant>`) | Agent 365 | Created by `a365 setup all`. This is the OBO subject for every Teams turn — Fabric IQ, Work IQ, and `noc-incident-agent` (RTI) all enforce access against *this* identity, not the human Teams user directly. |
 | `noc-iq-demo-teams-users` AAD group (recommended) | Group | Assign Foundry project + Fabric roles to this group once; add/remove Teams users as members instead of repeating per-user role assignments. |
 | `identities.bicep` worker/admin-ui/run-ledger user-assigned managed identities | Service | Gateway-side (APIM cost-governance stack): `config-sync-worker` job, Admin UI Container App, run-ledger service. |
+| `id-mcphost-*` user-assigned managed identity | Service | Cowork MCP Container App: ACR pull, Foundry/Search access, and a federated client assertion for user OBO. It has no client secret. |
+| Cowork MCP resource app + Microsoft Enterprise token store | Entra applications | The resource app exposes `noc.invoke`; the Teams Developer Portal auth configuration uses that resource app's client ID. After registration, its generated Application ID URI is added as an accepted audience, the Teams OAuth consent redirect is registered, and token-store client `ab3be6b7-f5df-413d-ac2d-abf1e3fd9c0b` is preauthorized. `scripts/setup_cowork_mcp_entra.py` applies the Entra-side configuration idempotently. |
 | Work IQ app registration (classic Entra app, `WORKIQ_ENTRA_APP_ID`) | Service (delegated) | The only classic app registration in this design — needed because Work IQ uses delegated Graph auth, unlike everything else which is UserEntraToken/OBO or managed identity. |
 
 ## 1. Foundry project RBAC (`infra/core/ai/rbac.bicep`) — declared in Bicep
@@ -30,17 +32,19 @@ data-plane check (`docs/PRIMER_MCP_CANCEL_SCOPE_BUG.md`,
 | App Service managed identity | Azure AI Developer | `64702f94-c441-49e6-a78b-ef80e0188fee` | Foundry project | Orchestrator's own tool/agent calls. |
 | App Service managed identity | Cognitive Services User | `a97b65f3-24c7-4388-baec-2e87135dc908` | Foundry project | Generic model-invocation permission. |
 | App Service managed identity | Search Index Data Reader | `1407120a-92aa-4202-b7e9-c0e197c71c8f` | Azure AI Search service | Foundry IQ's knowledge-base MCP tool queries Search directly with the app's own credential — **missing this caused every session to fail with a masked "Cancelled via cancel scope" error** (see below). |
-| `teamsUsersPrincipalId` (AAD group, e.g. `noc-iq-demo-teams-users`) | Foundry Agent Consumer | `eed3b665-ab3a-47b6-8f48-c9382fb1dad6` | Foundry project | OAuth identity-passthrough for persisted Prompt Agents (`noc-topology-agent`, `noc-comms-agent`, `noc-incident-agent`) — the *calling Teams user's* own grant is what Agent Service checks. |
+| MCP host managed identity | Azure AI Developer + Cognitive Services User | `64702f94-c441-49e6-a78b-ef80e0188fee`, `a97b65f3-24c7-4388-baec-2e87135dc908` | Foundry project | Host-level orchestration and model access. |
+| MCP host managed identity | Search Index Data Reader | `1407120a-92aa-4202-b7e9-c0e197c71c8f` | Search service named by the full `mcpSearchServiceResourceId`, even when it is in another resource group/subscription | Foundry IQ knowledge retrieval. |
+| `teamsUsersPrincipalId` / `mcpCallerPrincipalId` (AAD group, e.g. `noc-iq-demo-teams-users`) | Foundry Agent Consumer | `eed3b665-ab3a-47b6-8f48-c9382fb1dad6` | Foundry project | OAuth identity-passthrough for persisted Prompt Agents (`noc-topology-agent`, `noc-comms-agent`, `noc-incident-agent`) — the calling Teams/Cowork user's own grant is what Agent Service checks. |
 | `teamsUsersPrincipalId` (AAD group) | Azure AI Developer | `64702f94-c441-49e6-a78b-ef80e0188fee` | Foundry project | The toolbox **MCP endpoint** (every tool call) — this was the real fix for the "cancel scope" error (§2 below). |
 | `teamsUsersPrincipalId` (AAD group) | **Foundry Project Runtime User** ✅ load-bearing | `142bfaed-a13f-4c2d-bed2-6db62c4a1009` | Foundry project | The **only** role whose `dataActions` include `Microsoft.CognitiveServices/accounts/AIServices/responses/*` — the exact action a direct (non-`agent_reference`) Responses API call hits. |
 | `teamsUsersPrincipalId` (AAD group) | Cognitive Services OpenAI User | `5e0bd9bd-7b93-4f28-af87-19fc36ad61bd` | Foundry project | Generic model-invocation role, kept as belt-and-suspenders. |
 | `teamsUsersPrincipalId` (AAD group) | Cognitive Services User | `a97b65f3-24c7-4388-baec-2e87135dc908` | Foundry project | Generic model-invocation role, kept as belt-and-suspenders. |
 
-> **Automated this session** — all 5 `teamsUsersPrincipalId` role assignments
-> above are now declared directly in `infra/core/ai/rbac.bicep` (conditional
-> on `!empty(teamsUsersPrincipalId)`); no manual `az role assignment create`
-> is needed for a fresh deploy. See `docs/TROUBLESHOOTING.md` "RBAC
-> automation" entry.
+> **Automated this session** — all 5 caller role assignments are declared in
+> `infra/core/ai/rbac.bicep` for Teams and
+> `gateway/infra/core/ai/mcp-host-rbac.bicep` for Cowork. Pass the same Entra
+> group to `teamsUsersPrincipalId` and `mcpCallerPrincipalId`; no per-user
+> manual Azure role assignments are needed.
 
 ## 2. Foundry project RBAC — background/history (why 4 of the 5 roles above exist)
 
@@ -72,8 +76,9 @@ of hand-typed `az rest` commands — see `docs/DEPLOYMENT.md` §4b/§4d.
 
 | Grant | Type | Target | Scope | Why |
 |---|---|---|---|---|
-| `DataAgent.Read.All`, `DataAgent.Execute.All` delegated scopes | Tenant-wide Entra admin consent (`POST /oauth2PermissionGrants`, since Agent Identities have no classic app-registration object) | Agent Identity (`clientId`) → Fabric/Power BI service principal (`resourceId`) | Tenant | Without this: `AADSTS65001: consent_required`, tool silently never added to the turn (no error surfaced). |
+| `DataAgent.Read.All`, `DataAgent.Execute.All`, `GraphInstance.Read.All`, `GraphInstance.Execute.All` delegated scopes | Tenant-wide Entra admin consent (`POST /oauth2PermissionGrants`, since Agent Identities have no classic app-registration object) | Agent Identity (`clientId`) → Fabric/Power BI service principal (`resourceId`) | Tenant | Data Agent scopes permit agent invocation; GraphInstance scopes permit its GraphModel-backed topology source to execute. Without consent: `AADSTS65001: consent_required` or a downstream invalid-token failure. |
 | Workspace **Contributor** role | Fabric workspace role assignment (`POST /v1/workspaces/{id}/roleAssignments`) | Agent-user object id | Fabric workspace (`NOCTopologyWorkspace`) | Tenant consent ≠ workspace RBAC — separate check. Without this: valid, correctly-scoped token still gets a Fabric-side authz failure. |
+| Workspace **Contributor** role | Fabric workspace role assignment | Teams App Service system identity and Cowork MCP UAMI (`TEAMS_APP_SERVICE_PRINCIPAL_ID`, `MCP_HOST_PRINCIPAL_ID`) | Fabric workspace | Allows the deterministic direct-Graph fallback to execute read-only GQL when the preview Foundry → Data Agent nested token exchange fails. |
 | Fabric workspace **Viewer** (or higher) | Fabric workspace role assignment | Each Teams user, or an AAD group they belong to (`TEAMS_USERS_GROUP_ID`) | Fabric workspace | Required specifically for `noc-incident-agent` (RTI) — Foundry `Foundry Agent Consumer` project RBAC is **not sufficient on its own**; Eventhouse enforces the calling user's own Fabric permission at query time. |
 
 ## 4. Microsoft Graph — not ARM/Bicep-manageable, granted via `scripts/grant_agent_identity_access.py`
@@ -81,9 +86,9 @@ of hand-typed `az rest` commands — see `docs/DEPLOYMENT.md` §4b/§4d.
 | Grant | Type | Target | Scope | Why |
 |---|---|---|---|---|
 | `Sites.Read.All`, `Mail.Read`, `People.Read.All`, `OnlineMeetingTranscript.Read.All`, `Chat.Read`, `ChannelMessage.Read.All`, `ExternalItem.Read.All` | Tenant-wide Entra admin consent (`POST /oauth2PermissionGrants`) | Agent Identity → Microsoft Graph service principal | Tenant | Work IQ calls Graph server-side on the user's behalf; missing consent surfaces only as the generic "cancel scope" MCP error, never a clean 403 in this app's own traces. |
-| `WorkIQAgent.Ask` delegated permission | Classic app-registration admin consent (`az ad app permission admin-consent`) | Work IQ Entra app registration | Tenant | Required before `create_workiq_toolbox.py`'s connection can be used. Not folded into the consolidation script (different principal/app, one-time). |
+| `WorkIQAgent.Ask` delegated permission | Classic app-registration admin consent (`POST /oauth2PermissionGrants`) | Work IQ Entra app registration | Tenant | Required before the `WorkIQ` connection can be used; automated by `scripts/setup_workiq_entra_app.py`. |
 | `Mail.Send` (optional, outbound notifications only) | Merged into the **same** `oauth2PermissionGrants` scope string as `Mail.Read` above (no new app registration) — script does a scope-union PATCH, gated by `GRANT_MAIL_SEND=true` | Agent Identity → Microsoft Graph service principal | Tenant | Enables `agent/notifications.py`'s persona-broadcast email path (`docs/OUTBOUND_NOTIFICATIONS.md`). Only valid **inside a turn** (needs a `TurnContext` for the OBO exchange) — a true zero-touch send with no prior conversation would need a materially different model: `Mail.Send` as an Application permission on a separate client-credential app registration, not yet built. |
-| Azure AI Developer | Bicep-equivalent, applied manually per §9c pattern | Work IQ app's service principal | Foundry project | Same pattern as the agentic-user grant above, for the Work IQ app itself. |
+| Azure AI Developer | Azure RBAC, applied idempotently by `scripts/setup_workiq_entra_app.py` | Work IQ app's service principal | Foundry project | Lets the OAuth app use the target Foundry project connection. |
 | `McpServers.Mail.All`, `McpServers.Teams.All`, `McpServersMetadata.Read.All` (`customBlueprintPermissions` in `a365.config.json`) | Agent 365 Tools app permission | Agent Identity | Tenant | Applied by `a365 setup all`, not a separate manual step, but still not Bicep-managed. |
 
 > **Irreducible manual step**: `scripts/grant_agent_identity_access.py` needs
@@ -131,6 +136,15 @@ an existing environment that can't redeploy immediately) is still:
 | APIM system-assigned identity | **Key Vault Secrets User** | `4633458b-17de-408a-b874-0445c86b69e6` | Key Vault | Resolves the `run-token-signing-key` named value from Key Vault at runtime. |
 | APIM system-assigned identity | Cognitive Services OpenAI User | `5e0bd9bd-7b93-4f28-af87-19fc36ad61bd` | Azure OpenAI account | Managed-identity backend auth for the `openai-gateway` API's downgrade/rewrite policies. |
 | APIM system-assigned identity | Cognitive Services User | `a97b65f3-24c7-4388-baec-2e87135dc908` | Foundry (AI Services) account | Managed-identity backend auth for the `foundry-gateway` API. |
+| Cowork MCP UAMI | AcrPull | `7f951dda-4ed3-4680-a7ca-43fe172d538d` | Resource group (ACR) | Pull the MCP host image. |
+| Cowork MCP UAMI | Azure AI Developer + Cognitive Services User | `64702f94-c441-49e6-a78b-ef80e0188fee`, `a97b65f3-24c7-4388-baec-2e87135dc908` | Existing Foundry project | Initialize and run the same NOC orchestrator. |
+| Cowork MCP UAMI | Search Index Data Reader | `1407120a-92aa-4202-b7e9-c0e197c71c8f` | Existing Azure AI Search service | Preserve Foundry IQ access on the new host. |
+
+The Cowork Entra delegated grants and UAMI federated credential are created by
+`scripts/setup_cowork_mcp_entra.py`. The Microsoft Enterprise token-store
+`OAuthPluginVault` auth configuration remains a Microsoft 365 operation; its
+reference ID is created in Teams Developer Portal and supplied only when
+packaging. See [`COWORK_MCP.md`](COWORK_MCP.md).
 
 ## 7. Operational/teardown roles (not app runtime, but used this session)
 
@@ -153,6 +167,8 @@ The only remaining manual work is inherently non-ARM:
    any script or Bicep template.
 3. `WorkIQAgent.Ask` admin consent on the Work IQ app registration (§4) —
    a one-time, different-principal grant, not folded into the script.
+4. Create the Cowork Microsoft Entra SSO registration in Teams Developer
+   Portal and copy its auth-config reference ID into the package command.
 
 ## Key lesson embedded in this chart
 

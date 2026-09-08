@@ -194,6 +194,13 @@ Delegate as follows:
   Do NOT reflexively call both -- only call both if you truly need both the raw evidence
   and the written procedure/history.
 
+Scope discipline is mandatory: when the user asks only for blast radius, dependencies,
+alternate paths, or shared-conduit exposure, call only ask_topology_agent. Do not call RTI,
+Foundry IQ, Web IQ, or Work IQ unless the question separately requests telemetry, history,
+public information, or collaboration context. Likewise, use exactly one specialist for each
+of the focused single-domain test prompts; reserve multi-specialist fan-out for explicitly
+combined questions.
+
 Always cite which specialist grounded each factual claim. When summarizing an incident,
 report: (1) blast radius (services + SLA exposure), (2) the incident-telemetry evidence
 (timeline, exact readings, latency, suppression), (3) any shared-conduit or other non-obvious
@@ -220,8 +227,9 @@ def _get_service_credential():
     every credential.get_token() call failed with
     `CredentialUnavailableError: Azure Developer CLI could not be found.`
     """
-    if "WEBSITE_INSTANCE_ID" in os.environ:
-        return ManagedIdentityCredential()
+    if "WEBSITE_INSTANCE_ID" in os.environ or "IDENTITY_ENDPOINT" in os.environ:
+        client_id = os.getenv("AZURE_CLIENT_ID")
+        return ManagedIdentityCredential(client_id=client_id) if client_id else ManagedIdentityCredential()
     return AzureDeveloperCliCredential(tenant_id=AZURE_TENANT_ID, process_timeout=60)
 
 
@@ -273,7 +281,13 @@ class _RunHaltedError(Exception):
 
 
 async def _run_ledger_precall(
-    run_id: str, agent_name: str, step: str, model: str, est_input_tokens: int, max_output_tokens: int = 1024,
+    run_id: str,
+    agent_name: str,
+    step: str,
+    model: str,
+    est_input_tokens: int,
+    max_output_tokens: int = 1024,
+    prompt: str = "",
 ) -> Optional[dict]:
     """Best-effort precall decision from the run ledger. Returns None (== "allow, no
     ledger opinion") if the ledger is unreachable/unconfigured -- never blocks a turn
@@ -294,6 +308,7 @@ async def _run_ledger_precall(
                     "model": model,
                     "est_input_tokens": max(0, est_input_tokens),
                     "max_output_tokens": max_output_tokens,
+                    "prompt_hash": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
                 },
             )
             response.raise_for_status()
@@ -315,7 +330,7 @@ async def _run_ledger_postcall(
     view (never raises) -- a missed postcall degrades run-ledger accuracy, not the turn.
     """
     base_url = _run_ledger_base_url()
-    if not base_url:
+    if not base_url or not reservation_id:
         return
     payload: dict = {"run_id": run_id, "reservation_id": reservation_id}
     if failed:
@@ -585,6 +600,9 @@ _current_run_token: contextvars.ContextVar[Optional[str]] = contextvars.ContextV
 _current_run_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
     "_current_run_id", default=None
 )
+_current_deadline: contextvars.ContextVar[Optional[float]] = contextvars.ContextVar(
+    "_current_deadline", default=None
+)
 _next_run_step: contextvars.ContextVar[Optional[Callable[[], str]]] = contextvars.ContextVar(
     "_next_run_step", default=None
 )
@@ -765,6 +783,92 @@ class NocAgent(AgentInterface):
 
         return _ask
 
+    async def _call_topology_graph(self, question: str) -> Optional[str]:
+        """Answer focused link blast-radius questions through Fabric Graph directly."""
+        workspace_id = os.getenv("FABRIC_WORKSPACE_ID", "").strip()
+        graph_model_id = os.getenv("FABRIC_GRAPH_MODEL_ID", "").strip()
+        link_match = re.search(r"\bLINK-[A-Z0-9-]+\b", question.upper())
+        if not workspace_id or not graph_model_id or not link_match:
+            return None
+        normalized = question.casefold()
+        if not any(term in normalized for term in ("blast radius", "conduit", "depends", "affected")):
+            return None
+
+        link_id = link_match.group(0)
+        token = await asyncio.to_thread(
+            self._service_credential.get_token,
+            "https://api.fabric.microsoft.com/.default",
+        )
+        endpoint = (
+            f"https://api.fabric.microsoft.com/v1/workspaces/{workspace_id}"
+            f"/GraphModels/{graph_model_id}/executeQuery?preview=true"
+        )
+        escaped_link_id = link_id.replace("'", "''")
+        queries = {
+            "link": (
+                "MATCH (l:TransportLink)-[:ORIGINATES_AT]->(o:CoreRouter), "
+                "(l)-[:TERMINATES_AT]->(t:CoreRouter), "
+                "(l)-[:RIDES_ON]->(c:PhysicalConduit) "
+                f"FILTER l.LinkId = '{escaped_link_id}' "
+                "RETURN l.LinkId AS LinkId, o.RouterId AS OriginRouter, "
+                "t.RouterId AS TerminatingRouter, c.ConduitId AS ConduitId"
+            ),
+            "shared": (
+                "MATCH (target:TransportLink)-[:RIDES_ON]->(c:PhysicalConduit), "
+                "(other:TransportLink)-[:RIDES_ON]->(c) "
+                f"FILTER target.LinkId = '{escaped_link_id}' "
+                "RETURN other.LinkId AS LinkId, c.ConduitId AS ConduitId ORDER BY LinkId"
+            ),
+            "services": (
+                "MATCH (sla:SLAPolicy)-[:COVERS]->(s:Service)-[:DEPENDS_ON]->"
+                "(p:MPLSPath)-[:TRAVERSES_LINK]->(l:TransportLink) "
+                f"FILTER l.LinkId = '{escaped_link_id}' "
+                "RETURN s.ServiceId AS ServiceId, s.CustomerName AS CustomerName, "
+                "s.ActiveUsers AS ActiveUsers, sla.SLAPolicyId AS SLAPolicyId, "
+                "sla.Tier AS Tier, sla.PenaltyPerHourUSD AS PenaltyPerHourUSD, "
+                "p.PathId AS PathId ORDER BY ServiceId, PathId"
+            ),
+        }
+        results: dict[str, list[dict]] = {}
+        async with httpx.AsyncClient(timeout=20) as client:
+            for name, query in queries.items():
+                response = await client.post(
+                    endpoint,
+                    headers={"Authorization": f"Bearer {token.token}"},
+                    json={"query": query},
+                )
+                response.raise_for_status()
+                payload = response.json()
+                if not str(payload.get("status", {}).get("code", "")).startswith(("00", "01", "02", "03")):
+                    raise RuntimeError(f"Fabric Graph query failed: {payload.get('status')}")
+                results[name] = payload.get("result", {}).get("data", [])
+
+        if not results["link"]:
+            return f"Fabric IQ found no topology entity matching `{link_id}`."
+        link = results["link"][0]
+        shared_links = sorted(
+            row["LinkId"] for row in results["shared"] if row.get("LinkId") != link_id
+        )
+        service_lines = [
+            f"- `{row['ServiceId']}` ({row['CustomerName']}): {row['ActiveUsers']} active users; "
+            f"{row['Tier']} SLA `{row['SLAPolicyId']}`; ${row['PenaltyPerHourUSD']:,}/hour; "
+            f"path `{row['PathId']}`"
+            for row in results["services"]
+        ]
+        return "\n".join(
+            [
+                "**Fabric IQ — live topology graph**",
+                f"- Link: `{link_id}` (`{link['OriginRouter']}` → `{link['TerminatingRouter']}`)",
+                f"- Physical conduit: `{link['ConduitId']}`",
+                "- Other links sharing that conduit: "
+                + (", ".join(f"`{item}`" for item in shared_links) if shared_links else "none"),
+                "- Direct service/SLA exposure:",
+                *(service_lines or ["- No dependent services were returned by the topology graph."]),
+                "- Shared-conduit risk: "
+                + ("a conduit failure also removes the listed logical alternate link(s)." if shared_links else "none found."),
+            ]
+        )
+
     async def _call_specialist(self, key: str, question: str) -> str:
         """Invoke one persisted Prompt Agent and return its text answer.
 
@@ -784,6 +888,14 @@ class NocAgent(AgentInterface):
         the same precall/postcall contract APIM's own policies use, just made
         from Python rather than from policy XML. See docs/SEQUENCE.md.
         """
+        if key == "fabric_iq":
+            try:
+                direct_answer = await self._call_topology_graph(question)
+                if direct_answer:
+                    return direct_answer
+            except Exception as exc:  # noqa: BLE001 -- fall back to the persisted specialist
+                logger.warning("Direct Fabric Graph query failed; falling back to Data Agent: %s", exc)
+
         agent_name = self._available_agents[key]
         _, needs_user_identity = SPECIALIST_AGENTS[key]
         if needs_user_identity:
@@ -810,6 +922,7 @@ class NocAgent(AgentInterface):
                 model=agent_name,
                 est_input_tokens=len(question) // 4,
                 max_output_tokens=1024,  # advisory ceiling offered to the ledger's decision, not applied unless it mutates
+                prompt=question,
             )
             reservation_id = _apply_precall_decision(decision)  # raises _RunHaltedError on halt/queue
             if decision and decision.get("action") == "mutate" and decision.get("max_output_tokens"):
@@ -824,6 +937,9 @@ class NocAgent(AgentInterface):
                 else None
             )
             create_kwargs: dict = {"input": question, "extra_headers": extra_headers}
+            deadline = _current_deadline.get()
+            if deadline is not None:
+                create_kwargs["timeout"] = max(1.0, deadline - time.monotonic())
             if max_output_tokens is not None:
                 # Only set when the run ledger has actually asked for a steer-down --
                 # never impose a default cap that the agent didn't have before.
@@ -941,6 +1057,7 @@ class NocAgent(AgentInterface):
                     step=step or "0",
                     model=MODEL_DEPLOYMENT_NAME,
                     est_input_tokens=est_input_tokens,
+                    prompt="\n".join(str(getattr(m, "contents", m)) for m in history),
                 )
                 reservation_id = _apply_precall_decision(decision)  # raises _RunHaltedError on halt/queue
             try:

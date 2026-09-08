@@ -56,6 +56,12 @@ param fabricAdminUpn string = ''
 @description('Optional service-principal object ID to add as a Fabric capacity administrator.')
 param fabricServicePrincipalId string = ''
 
+@description('Fabric workspace GUID used by the direct Graph topology fallback.')
+param fabricWorkspaceId string = ''
+
+@description('Fabric GraphModel GUID used by the direct Graph topology fallback.')
+param fabricGraphModelId string = ''
+
 @description('Microsoft web MCP endpoint for Web IQ.')
 param webIqMcpEndpoint string = 'https://api.microsoft.ai/v3/mcp'
 
@@ -167,6 +173,8 @@ module agentHost 'core/host/appservice.bicep' = {
       APPLICATIONINSIGHTS_CONNECTION_STRING: aiProject.outputs.APPLICATIONINSIGHTS_CONNECTION_STRING
       AZURE_TENANT_ID: tenant().tenantId
       FABRIC_TENANT_ID: tenant().tenantId
+      FABRIC_WORKSPACE_ID: fabricWorkspaceId
+      FABRIC_GRAPH_MODEL_ID: fabricGraphModelId
       // Must match the handler name used in the
       // AGENTAPPLICATION__USERAUTHORIZATION__HANDLERS__<name>__SETTINGS__*
       // settings written by `a365 setup all` (see docs/DEPLOYMENT.md step 9).

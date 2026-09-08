@@ -42,6 +42,18 @@ The demo scenario is a Sydney↔Melbourne fibre-cut incident. See
 end-to-end run must surface, and the rest of that doc for the runtime
 call sequence.
 
+## Copilot Cowork MCP channel
+
+`agent/mcp_server.py` is an additional channel over the same initialized
+`NocAgent._agent`; it is not a second orchestration implementation. A
+stateless native MCP server exposes one read-only tool, `noc_investigate`, at
+APIM `/mcp`. Container Apps Easy Auth validates Entra tokens, the app performs
+defensive claim/scope checks and OBO to `https://ai.azure.com/.default`, and
+the existing context variables isolate user token, run token/ID, step counter,
+and user attribution per tool call. The application enforces Cowork's
+sub-30-second contract with a maximum 28-second timeout. See
+[`COWORK_MCP.md`](COWORK_MCP.md).
+
 ## Components
 
 ```
@@ -268,6 +280,8 @@ existing resources are reused), tagged `purpose=noc-iq-demo` plus an optional
 | Fabric capacity (F2) | `infra/core/fabric/fabric-capacity.bicep` | Backs the Fabric IQ workspace/lakehouse/ontology (billable — paused/deleted at teardown) |
 | App Service (Linux, B1) | `infra/core/host/appservice.bicep` | Hosts `agent/` via `start_with_generic_host.py` |
 | Project-scope RBAC | `infra/core/ai/rbac.bicep` | Grants the App Service's managed identity Azure AI Developer + Cognitive Services User at PROJECT scope; optionally grants `Foundry Agent Consumer` at project scope to `teamsUsersPrincipalId` (the Teams users who call the three OAuth-identity-passthrough specialists) |
+| Cowork MCP host + Easy Auth | `gateway/infra/core/host/mcp-host.bicep` | Optional externally-ingressed Container App behind APIM, using its UAMI for image pull, Foundry access, and secretless OBO client assertions |
+| Cowork MCP pass-through | `gateway/infra/core/apim/apim.bicep` | Exposes `/mcp` and `/.well-known/oauth-protected-resource/mcp` without model/body policies |
 
 The Fabric **workspace** itself is a Fabric-tenant object, not an ARM
 resource, and is created/deleted separately from the resource group (see
