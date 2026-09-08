@@ -204,6 +204,12 @@ param mcpFoundryProjectEndpoint string = ''
 @description('Foundry model deployment used by the Cowork MCP host.')
 param mcpFoundryModelDeploymentName string = ''
 
+@description('Fabric workspace GUID used by the MCP host direct Graph topology fallback.')
+param mcpFabricWorkspaceId string = ''
+
+@description('Fabric GraphModel GUID used by the MCP host direct Graph topology fallback.')
+param mcpFabricGraphModelId string = ''
+
 @description('Foundry project ARM resource ID used for MCP host managed-identity RBAC.')
 param mcpFoundryProjectResourceId string = ''
 
@@ -483,6 +489,8 @@ module mcpHost 'core/host/mcp-host.bicep' = {
     publicMcpUrl: 'https://${apimResourceName}.azure-api.net/mcp'
     foundryProjectEndpoint: mcpFoundryProjectEndpoint
     foundryModelDeploymentName: mcpFoundryModelDeploymentName
+    fabricWorkspaceId: mcpFabricWorkspaceId
+    fabricGraphModelId: mcpFabricGraphModelId
     runLedgerBaseUrl: runLedger.outputs.appFqdn
     runLedgerBudgetMicros: 2000000
     runLedgerPolicySet: 'default'

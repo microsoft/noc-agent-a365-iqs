@@ -24,9 +24,12 @@ Optional env:
   TEAMS_USERS_GROUP_ID      - AAD group object id to also grant Fabric workspace Viewer
                               access (docs/DEPLOYMENT.md 4d, required for noc-incident-agent).
                               Skipped if unset.
-  GRANT_MAIL_SEND           - "true" to also request Mail.Send in the Graph consent scope
-                              (docs/OUTBOUND_NOTIFICATIONS.md's outbound-notification path).
-                              Default "false".
+  GRANT_MAIL_SEND                    - "true" to also request Mail.Send in the Graph consent scope.
+                                       Default "false".
+  TEAMS_APP_SERVICE_PRINCIPAL_ID     - Teams host managed-identity object ID; grants Contributor
+                                       for direct Fabric Graph queries. Skipped if unset.
+  MCP_HOST_PRINCIPAL_ID              - Cowork MCP UAMI object ID; grants Contributor for direct
+                                       Fabric Graph queries. Skipped if unset.
 
 Usage:
   python grant_agent_identity_access.py           # applies every grant above
@@ -68,6 +71,8 @@ AGENT_IDENTITY_OBJECT_ID = os.getenv("AGENT_IDENTITY_OBJECT_ID", "").strip().str
 AGENT_USER_OBJECT_ID = os.getenv("AGENT_USER_OBJECT_ID", "").strip().strip("'\"")
 TEAMS_USERS_GROUP_ID = os.getenv("TEAMS_USERS_GROUP_ID", "").strip().strip("'\"")
 GRANT_MAIL_SEND = os.getenv("GRANT_MAIL_SEND", "false").strip().lower() == "true"
+TEAMS_APP_SERVICE_PRINCIPAL_ID = os.getenv("TEAMS_APP_SERVICE_PRINCIPAL_ID", "").strip().strip("'\"")
+MCP_HOST_PRINCIPAL_ID = os.getenv("MCP_HOST_PRINCIPAL_ID", "").strip().strip("'\"")
 
 
 def log_message(message: str) -> None:
@@ -176,7 +181,7 @@ def main() -> None:
         base_url="", headers={"Authorization": f"Bearer {fabric_token(credential)}"}, timeout=30
     )
 
-    log_message("1/4 Fabric tenant admin-consent grant (DataAgent.Read.All/Execute.All) ...")
+    log_message("1/6 Fabric tenant admin-consent grant (DataAgent.Read.All/Execute.All) ...")
     fabric_sp_id = resolve_sp_object_id(graph_client, FABRIC_APP_ID)
     upsert_oauth2_permission_grant(
         graph_client,
@@ -185,7 +190,7 @@ def main() -> None:
         scopes=FABRIC_SCOPES.split(),
     )
 
-    log_message("2/4 Fabric workspace role assignment for the agent-user identity ...")
+    log_message("2/6 Fabric workspace role assignment for the agent-user identity ...")
     ensure_fabric_workspace_role(
         fabric_client,
         workspace_id=FABRIC_WORKSPACE_ID,
@@ -194,7 +199,7 @@ def main() -> None:
         role="Contributor",
     )
 
-    log_message("3/4 Microsoft Graph tenant admin-consent grant (Work IQ scopes) ...")
+    log_message("3/6 Microsoft Graph tenant admin-consent grant (Work IQ scopes) ...")
     graph_sp_id = resolve_sp_object_id(graph_client, GRAPH_APP_ID)
     graph_scopes = list(WORKIQ_GRAPH_SCOPES)
     if GRANT_MAIL_SEND:
@@ -206,7 +211,7 @@ def main() -> None:
         scopes=graph_scopes,
     )
 
-    log_message("4/4 Fabric workspace Viewer for the Teams users group (noc-incident-agent) ...")
+    log_message("4/6 Fabric workspace Viewer for the Teams users group (noc-incident-agent) ...")
     if TEAMS_USERS_GROUP_ID:
         ensure_fabric_workspace_role(
             fabric_client,
@@ -217,6 +222,30 @@ def main() -> None:
         )
     else:
         log_message("  TEAMS_USERS_GROUP_ID not set -- skipping (set it in .env to automate this).")
+
+    log_message("5/6 Fabric workspace Contributor for the Teams App Service identity ...")
+    if TEAMS_APP_SERVICE_PRINCIPAL_ID:
+        ensure_fabric_workspace_role(
+            fabric_client,
+            workspace_id=FABRIC_WORKSPACE_ID,
+            principal_id=TEAMS_APP_SERVICE_PRINCIPAL_ID,
+            principal_type="ServicePrincipal",
+            role="Contributor",
+        )
+    else:
+        log_message("  TEAMS_APP_SERVICE_PRINCIPAL_ID not set -- skipping.")
+
+    log_message("6/6 Fabric workspace Contributor for the Cowork MCP managed identity ...")
+    if MCP_HOST_PRINCIPAL_ID:
+        ensure_fabric_workspace_role(
+            fabric_client,
+            workspace_id=FABRIC_WORKSPACE_ID,
+            principal_id=MCP_HOST_PRINCIPAL_ID,
+            principal_type="ServicePrincipal",
+            role="Contributor",
+        )
+    else:
+        log_message("  MCP_HOST_PRINCIPAL_ID not set -- skipping.")
 
     log_message("Done. RBAC propagation can still take a couple of minutes before the next turn succeeds.")
 

@@ -44,6 +44,12 @@
     "mcpFoundryModelDeploymentName": {
       "value": "${mcpFoundryModelDeploymentName}"
     },
+    "mcpFabricWorkspaceId": {
+      "value": "${FABRIC_WORKSPACE_ID}"
+    },
+    "mcpFabricGraphModelId": {
+      "value": "${FABRIC_GRAPH_MODEL_ID}"
+    },
     "mcpFoundryProjectResourceId": {
       "value": "${mcpFoundryProjectResourceId}"
     },

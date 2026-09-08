@@ -57,6 +57,12 @@ param foundryProjectEndpoint string
 @description('Foundry model deployment used by NocAgent.')
 param foundryModelDeploymentName string
 
+@description('Fabric workspace GUID used by the direct Graph topology fallback.')
+param fabricWorkspaceId string = ''
+
+@description('Fabric GraphModel GUID used by the direct Graph topology fallback.')
+param fabricGraphModelId string = ''
+
 @description('Internal run-ledger base URL.')
 param runLedgerBaseUrl string
 
@@ -169,6 +175,14 @@ resource mcpHostApp 'Microsoft.App/containerApps@2024-10-02-preview' = if (mcpHo
             {
               name: 'AZURE_AI_MODEL_DEPLOYMENT_NAME'
               value: foundryModelDeploymentName
+            }
+            {
+              name: 'FABRIC_WORKSPACE_ID'
+              value: fabricWorkspaceId
+            }
+            {
+              name: 'FABRIC_GRAPH_MODEL_ID'
+              value: fabricGraphModelId
             }
             {
               name: 'RUN_LEDGER_BASE_URL'

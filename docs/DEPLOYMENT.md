@@ -171,14 +171,19 @@ step 9), using an account with Global Admin / Fabric admin rights:
 # in Application Insights `traces` once a user has messaged the agent once).
 echo "AGENT_IDENTITY_OBJECT_ID=<agent identity object id>" >> .env
 echo "AGENT_USER_OBJECT_ID=<agent-user object id>" >> .env
+# Optional but required for the direct Fabric Graph fallback used by Teams/Cowork:
+echo "TEAMS_APP_SERVICE_PRINCIPAL_ID=<App Service managed-identity object id>" >> .env
+echo "MCP_HOST_PRINCIPAL_ID=<Cowork MCP UAMI object id>" >> .env
 python scripts/grant_agent_identity_access.py
 ```
 
 This grants the Fabric tenant admin-consent (`DataAgent.Read.All`,
 `DataAgent.Execute.All`, `GraphInstance.Read.All`, and
 `GraphInstance.Execute.All`) and adds the agent-user identity as a `Contributor`
-on the Fabric workspace — safely re-runnable any time (it checks existing
-grants/role assignments before writing).
+on the Fabric workspace. When the two optional host principal IDs are set, it also
+grants `Contributor` to the Teams App Service identity and Cowork MCP UAMI for
+the deterministic direct-Graph fallback. The script is safely re-runnable (it
+checks existing grants/role assignments before writing).
 
 ### 4c. Create the Fabric IQ + Work IQ Foundry project connections (automated)
 

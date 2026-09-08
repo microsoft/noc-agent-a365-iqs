@@ -37,6 +37,12 @@
     },
     "fabricAdminUpn": {
       "value": "${fabricAdminUpn}"
+    },
+    "fabricWorkspaceId": {
+      "value": "${FABRIC_WORKSPACE_ID}"
+    },
+    "fabricGraphModelId": {
+      "value": "${FABRIC_GRAPH_MODEL_ID}"
     }
   }
 }

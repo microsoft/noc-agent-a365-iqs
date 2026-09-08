@@ -111,7 +111,8 @@ The script creates or updates:
 - client-to-resource delegated permission and admin consent for that diagnostic
   client;
 - the resource application's delegated Azure AI permission needed by the OBO
-  exchange, plus admin consent;
+  exchange, plus Fabric `DataAgent.Read/Execute` and `GraphInstance.Read/Execute`
+  permissions used by the topology path, with tenant-wide admin consent;
 - a federated identity credential that trusts the MCP UAMI as the resource
   application's client assertion.
 

@@ -23,6 +23,13 @@ TOKEN_EXCHANGE_AUDIENCE = "api://AzureADTokenExchange"
 TEAMS_REDIRECT_URI = "https://teams.microsoft.com/api/platform/v1.0/oAuthRedirect"
 TEAMS_CONSENT_REDIRECT_URI = "https://teams.microsoft.com/api/platform/v1.0/oAuthConsentRedirect"
 M365_TOKEN_STORE_CLIENT_ID = "ab3be6b7-f5df-413d-ac2d-abf1e3fd9c0b"
+FABRIC_RESOURCE_APP_ID = "00000009-0000-0000-c000-000000000000"
+FABRIC_SCOPE_VALUES = (
+    "DataAgent.Read.All",
+    "DataAgent.Execute.All",
+    "GraphInstance.Read.All",
+    "GraphInstance.Execute.All",
+)
 FEDERATED_CREDENTIAL_NAME = "mcp-uami-client-assertion"
 _az_cli = shutil.which("az") or shutil.which("az.cmd") or "az"
 # Windows installs Azure CLI as az.cmd; invoke its bundled Python directly so
@@ -359,6 +366,23 @@ def main() -> None:
         downstream_sp["appId"],
         downstream_scope["id"],
     )
+    fabric_sp = _service_principal_for_app(FABRIC_RESOURCE_APP_ID)
+    if not fabric_sp:
+        raise RuntimeError("The Microsoft Fabric service principal was not found in this tenant.")
+    fabric_scopes = {
+        scope.get("value"): scope
+        for scope in fabric_sp.get("oauth2PermissionScopes", [])
+        if scope.get("isEnabled", True)
+    }
+    for scope_value in FABRIC_SCOPE_VALUES:
+        scope = fabric_scopes.get(scope_value)
+        if not scope:
+            raise RuntimeError(f"Microsoft Fabric delegated scope {scope_value!r} was not found.")
+        resource_access = _merge_required_access(
+            resource_access,
+            fabric_sp["appId"],
+            scope["id"],
+        )
     _graph(
         "patch",
         f"applications/{resource_app['id']}",
@@ -410,6 +434,8 @@ def main() -> None:
     if not args.skip_admin_consent:
         _ensure_permission_grant(client_sp["id"], resource_sp["id"], args.scope_value)
         _ensure_permission_grant(resource_sp["id"], downstream_sp["id"], downstream_scope["value"])
+        for scope_value in FABRIC_SCOPE_VALUES:
+            _ensure_permission_grant(resource_sp["id"], fabric_sp["id"], scope_value)
 
     scope_uri = f"{resource_uri}/{args.scope_value}"
     output = {
