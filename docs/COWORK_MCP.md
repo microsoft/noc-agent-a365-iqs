@@ -1,7 +1,9 @@
 # Copilot Cowork MCP channel
 
-For the numbered component-level request flow, specialist/tool mapping, and
-direct Fabric Graph exception, see [Cowork sequence diagrams](COWORK_SEQUENCE.md).
+This is the consolidated setup and operations guide. The
+[component sequences](#7-component-level-sequences-and-the-two-approaches),
+[authentication status](#8-authentication-status-and-remaining-challenges), and
+[remaining work](#9-acceptance-status-and-remaining-work) are included below.
 
 This channel exposes the existing in-process `NocAgent._agent` as one
 read-only MCP tool, `noc_investigate`, without changing the Teams/A365
@@ -194,6 +196,8 @@ Run the second `gateway/infra/main.bicep` deployment with:
 mcpHostImage=<acr-login-server>/noc-mcp:1.0.0
 mcpFoundryProjectEndpoint=<existing Foundry project endpoint>
 mcpFoundryModelDeploymentName=<existing model deployment>
+mcpFabricWorkspaceId=<Fabric workspace GUID>
+mcpFabricGraphModelId=<Fabric GraphModel GUID>
 mcpFoundryProjectResourceId=<existing Foundry project ARM resource ID>
 mcpSearchServiceResourceId=<existing Search service ARM resource ID>
 mcpCallerPrincipalId=<Entra group object ID containing authorized Cowork users>
@@ -218,6 +222,23 @@ curl.exe -i -X POST "https://<apim-name>.azure-api.net/mcp"
 
 The first call returns RFC 9728 metadata. The unauthenticated MCP call returns
 `401` and a `WWW-Authenticate` header containing the same metadata URL.
+
+For the direct Graph path, set `FABRIC_WORKSPACE_ID` and
+`FABRIC_GRAPH_MODEL_ID` in the deployment environment. The gateway parameter
+file maps these to `mcpFabricWorkspaceId`/`mcpFabricGraphModelId`; the Teams
+parameter file maps them to `fabricWorkspaceId`/`fabricGraphModelId`. Both
+hosts receive the matching environment variables through Bicep. Populate
+these in each azd environment used for provisioning; a repo-root `.env` alone
+is not a substitute for azd deployment inputs.
+
+Fabric workspace grants are separate from ARM RBAC. Set
+`MCP_HOST_PRINCIPAL_ID` to the MCP UAMI object ID and
+`TEAMS_APP_SERVICE_PRINCIPAL_ID` to the Teams App Service system-identity
+object ID in the repo-root `.env`, then run
+`python scripts/grant_agent_identity_access.py` after its required Agent
+Identity inputs are configured (see [Deployment section 4b](DEPLOYMENT.md#4b-grant-the-agent-identity-access-to-fabric-required-one-time-per-environment)).
+The script grants the host identities workspace Contributor for direct Graph
+execution. These are principal/object IDs, not application/client IDs.
 
 ## 5. Package and sideload Cowork
 
@@ -285,3 +306,224 @@ host enforces `MCP_TOOL_TIMEOUT_SECONDS` with a default and hard ceiling of
 that limit; use the focused specialist skill workflows or retry with a narrower
 asset/evidence question. The timeout is enforced in the application, not
 simulated by an APIM policy.
+
+## 7. Component-level sequences and the two approaches
+
+### Approach A: Foundry specialist with a native MCP tool
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant C as Copilot Cowork
+    participant P as APIM /mcp
+    participant H as ACA Easy Auth + MCP host
+    participant E as Microsoft Entra
+    participant O as In-process NocAgent / MAF
+    participant F as Foundry Prompt Agent
+    participant B as Agent MCPTool + project connection
+    participant T as Downstream MCP server / tool
+
+    U->>C: Ask NOC question / use Cowork skill
+    opt First use or renewed sign-in
+        C->>E: OAuth sign-in and consent for noc.invoke
+        E-->>C: Access token for MCP resource
+    end
+    C->>P: MCP initialize and tools/list
+    P->>H: Forward MCP protocol and authorization
+    H-->>C: Advertise noc_investigate(task), via APIM
+    C->>P: tools/call noc_investigate(task)
+    P->>H: Forward unchanged
+    H->>H: Validate Easy Auth principal, claims, scope and group
+    H->>E: OBO exchange using UAMI federated assertion
+    E-->>H: Calling-user token for Foundry
+    H->>H: Establish run context and TokenOps reservation
+    alt Focused prompt matched by keyword router
+        H->>O: _call_specialist(key, task)
+        Note over H,O: Skip outer orchestrator model turn
+    else No focused route matched
+        H->>O: AgentMCPTool invokes NocAgent._agent
+        O->>O: Foundry-backed model selects local ask_* function tools
+        Note over O,F: Each selected function invokes a specialist
+    end
+    O->>F: Responses API request to selected persisted agent
+    F->>B: Use native MCPTool in agent definition
+    Note over F,B: Binding/configuration, not a separate toolbox server
+    B->>T: Discover tools and invoke selected MCP tool
+    Note over B,T: Connection supplies downstream authentication
+    T-->>F: Evidence / tool result through MCP binding
+    F-->>O: Grounded answer and model usage
+    O-->>H: Specialist answer or orchestrator synthesis
+    H->>H: Record usage, close reservation, reset context
+    H-->>P: MCP content blocks / error / consent link
+    P-->>C: MCP response
+    C-->>U: Present answer and citations
+```
+
+| Stage | Component | Responsibility |
+|---|---|---|
+| 1. Select | Cowork | A skill guides the task; Cowork calls `noc_investigate`, not the five specialists directly. |
+| 2. Enter | APIM | Transparent Streamable HTTP MCP proxy, preserving authorization, protocol headers and challenges. No model/token policy runs on `/mcp`. |
+| 3. Authorize | Easy Auth and MCP host | Easy Auth validates the token; the app checks the injected principal, tenant, audience, scope, identity and authorized group. |
+| 4. Delegate | Entra and MCP UAMI | Federated assertion for `api://AzureADTokenExchange`, then OBO for `https://ai.azure.com/.default`. This currently happens before routing, even for direct Graph. |
+| 5. Govern | Host and run ledger | Establish per-call context, mint a run token and request a precall decision when configured. Halt/queue decisions can stop execution. |
+| 6. Route | NocAgent | Focused keyword matches bypass the outer model. Otherwise the in-process MAF orchestrator uses a Foundry model to select local `ask_*` function tools. |
+| 7. Reason | Persisted Prompt Agent | Receives the question via Responses API and selects tools from its persisted definition. |
+| 8. Retrieve | Native MCP binding and remote server | `MCPTool(project_connection_id=...)` supplies connection configuration; the remote MCP server executes its tool against the data source. Tool discovery may be reused rather than repeated per turn. |
+| 9. Return | Foundry, host, APIM and Cowork | Evidence becomes a specialist answer, optionally orchestrator synthesis, MCP content and finally Cowork's presentation. Errors and consent requirements must remain explicit. |
+
+**Where is the toolbox?** The old shared `noc-iq-toolbox` is no longer a
+separate runtime hop. Each persisted specialist has its own native `MCPTool`
+and project connection. "Toolbox" can describe this tool configuration
+informally, but it is not an additional server between agent and tool.
+
+**Routing limitation:** `_direct_specialist_for_task` currently chooses the
+first matching keyword route. Combined questions that contain those keywords
+may be routed to one specialist; multi-specialist orchestration is not
+guaranteed for every combined prompt.
+
+### Approach B: deterministic direct Fabric Graph
+
+This path follows the same ingress, authorization, OBO and run-context steps:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant H as Cowork MCP host
+    participant N as NocAgent
+    participant I as Host managed identity
+    participant G as Fabric Graph REST API
+    participant F as Foundry topology agent
+    participant D as Fabric Data Agent MCP
+
+    H->>N: _call_specialist(fabric_iq, question)
+    N->>N: Match LINK identifier and supported topology terms
+    alt Direct Graph template applies and IDs are configured
+        N->>I: Get token for api.fabric.microsoft.com
+        I-->>N: Service-identity token
+        N->>G: GQL 1 - link endpoints and conduit
+        G-->>N: Link and conduit rows
+        N->>G: GQL 2 - links sharing the conduit
+        G-->>N: Shared-link rows
+        N->>G: GQL 3 - service, MPLS path and SLA dependencies
+        G-->>N: Direct exposure rows
+        N-->>H: Deterministically formatted topology answer
+        Note over N,G: No Foundry agent, toolbox or downstream MCP on success
+    else No template match or direct query raises an exception
+        N->>F: Invoke persisted noc-topology-agent
+        F->>D: Native MCPTool / fabric-iq-connection
+        D->>G: Data Agent queries GraphModel
+        G-->>D: Result or downstream error
+        D-->>F: Tool result or token failure
+        F-->>N: Specialist answer
+        N-->>H: Return specialist output
+    end
+```
+
+| Aspect | Approach A: Foundry + MCP | Approach B: direct Graph |
+|---|---|---|
+| Scope | Specialist reasoning and flexible questions over its tool surface | Focused `LINK-*` blast-radius/conduit templates only |
+| Execution | Prompt Agent -> native MCPTool/connection -> downstream MCP server | NocAgent -> Graph REST `executeQuery?preview=true` |
+| Graph data identity | User-delegated connection for the topology specialist | MCP UAMI, or Teams App Service managed identity |
+| Authorization boundary | Caller authorization plus downstream user permissions/consent | Caller authorization at the host plus host workspace access; not per-user Graph filtering |
+| Model involvement | Specialist model, optionally an outer orchestrator model | No specialist model on success; Cowork still presents the result |
+| Current topology status | Nested Data Agent-to-Graph token error remains unresolved | Focused topology accepted in both Teams and Cowork |
+| Tradeoff | More flexible but adds latency and nested auth dependencies | Faster and deterministic, but limited query coverage and broader service-identity access |
+
+The Graph HTTP read timeout is 20 seconds; the outer Cowork call has a
+28-second maximum including OBO. On direct-query exceptions, the current code
+attempts the persisted specialist with the remaining outer budget. This can
+obscure a transport timeout behind a later Data Agent token error. A successful
+direct query bypasses the nested-token problem; it does not fix it.
+
+### Specialist-to-tool mapping
+
+| Cowork intent | Persisted Foundry agent | Native MCP connection | Tool/data surface |
+|---|---|---|---|
+| `foundry_iq`: runbooks and prior tickets | `noc-knowledge-agent` | `kb-mcp-connection` | Foundry IQ knowledge-base MCP / Azure AI Search-backed knowledge |
+| `fabric_iq`: general topology | `noc-topology-agent` | `fabric-iq-connection` | Fabric Data Agent MCP / GraphModel |
+| `web_iq`: public advisories | `noc-threatintel-agent` | `web-iq-connection` | Public web-search MCP |
+| `work_iq`: on-call and incident bridge | `noc-comms-agent` | `WorkIQ` | Microsoft 365 MCP / Teams and Outlook context |
+| `rti_iq`: incident evidence | `noc-incident-agent` | `FABRIC_RTI_CONNECTION_ID` | Fabric Eventhouse KQL MCP / telemetry and alerts |
+| Focused link blast radius / conduit | Bypassed on direct success | Bypassed | Three deterministic Graph REST GQL queries |
+
+Calls to Foundry use the calling-user token for Fabric/Work/RTI specialists
+and the service credential for Foundry IQ/Web IQ. Authentication to Foundry
+and authentication from Foundry to the downstream tool are separate checks.
+
+### Governance and answer boundaries
+
+- Run-ledger calls are a side path from the host, not a hop between a Foundry
+  agent and its tool. Specialists report SDK usage; the outer MCP reservation
+  uses text-token estimates because MCP content blocks do not carry the
+  underlying `AgentResponse` usage object.
+- Direct Graph success has no specialist LLM usage. The outer MCP accounting
+  still estimates text tokens; that estimate is not evidence of a specialist
+  model invocation or its actual cost.
+- The templates cover endpoints, conduit-sharing and direct service/SLA
+  dependencies. They do not enumerate all diverse paths or indirect
+  dependencies, prove failover behavior, or establish incurred penalties.
+- Cowork may rephrase the result. Claims of "no remaining Sydney-Melbourne
+  path", specific equipment/fibre-pair protection, or a failed wider-dependency
+  query need separate evidence. Listed SLA exposure is potential exposure,
+  not a confirmed bill.
+
+Implementation: [`mcp_server.py`](../agent/mcp_server.py) (`call_tool`,
+`_invoke_noc_tool`, `_direct_specialist_for_task`),
+[`agent.py`](../agent/agent.py) (`_call_specialist`, `_call_topology_graph`,
+`_build_orchestrator_tools`), and
+[`create_foundry_agents.py`](../scripts/create_foundry_agents.py).
+
+## 8. Authentication status and remaining challenges
+
+Status as of 2026-09-08; success at one boundary does not prove every downstream
+boundary works.
+
+| Boundary / issue | Status and evidence | Operational guidance |
+|---|---|---|
+| Cowork -> APIM -> Easy Auth -> MCP | Working in fresh user turns. Earlier resource/client-ID confusion, scope/audience mismatch, token-store allowlisting, group-claim and packaging problems were corrected. | Keep the resource app ID in the portal registration, original `noc.invoke` scope, generated audience, token-store preauthorization/allowlist and group claims as documented in section 3. |
+| MCP UAMI federation and Foundry OBO | Tokens acquired successfully in runtime logs; no stored client secret. | Preserve the federated trust and Azure AI delegated consent. Direct Graph still passes through this OBO preflight. |
+| Foundry -> Fabric Data Agent -> GraphModel | Still failing with an internally invalid graph token when invoked through the topology specialist. Direct GQL works; the user reports Data Agent success inside Fabric. This isolates the failing nested connector path, but the provider's internal root cause is not confirmed. | Retain the direct template path for supported questions. Capture failed connector request/correlation IDs for Fabric/Foundry support rather than repeatedly broadening permissions or rebuilding the graph. |
+| Fabric delegated permissions | `DataAgent.Read.All`, `DataAgent.Execute.All`, `GraphInstance.Read.All`, `GraphInstance.Execute.All` were granted to the Agent Identity and Cowork resource app. This did not resolve the nested failure. | Consent is not workspace RBAC and is not evidence of successful nested token exchange. |
+| Direct Graph managed identities | Teams system identity and MCP UAMI have workspace Contributor; both returned the expected topology. | Keep workspace/GraphModel IDs in deployment inputs and host grants in the setup script. This is service access, not the caller's delegated Graph access; review least privilege and allowed caller scope before wider rollout. |
+| RTI and Work IQ user delegation | Separate caller consent and resource-access requirements remain. RTI previously failed with 403 before permission fixes; later Teams turns returned live telemetry. | First-use consent can still be required. Foundry project access alone does not confer Eventhouse workspace or personal Microsoft 365 access. Do not label every specialist verified based on topology success. |
+| Cowork Graph timeout followed by access error | At 09:30 UTC, direct Graph timed out, then fallback hit the nested-token error. A container probe reproduced `ReadTimeout`; later identical routed calls completed in 2.56 and 2.11 seconds without auth/network changes. | The original failure was a timeout, not proof of revoked access. Cause of the intermittent timeout is unconfirmed; a cold-start explanation is not established. |
+| Web IQ 429 | A public-search/Foundry rate-limit response was observed; this is not an authentication failure. | Retry after cooldown and inspect quota/retry behavior if persistent. Disclose any reused results and their age. |
+
+For incident chronology, graph ingestion/relationship findings and diagnostic
+commands, see [Troubleshooting](TROUBLESHOOTING.md). The graph now includes
+`Service -[:DEPENDS_ON]-> MPLSPath`; rebuilding its canvas is not a remedy for
+the nested-token error.
+
+## 9. Acceptance status and remaining work
+
+Fresh Teams and Cowork responses supplied by the user on 2026-09-08 agree on:
+
+| Evidence | Accepted result |
+|---|---|
+| Link endpoints | `LINK-SYD-MEL-FIBRE-01`: `CORE-SYD-01` -> `CORE-MEL-01` |
+| Shared conduit | `CONDUIT-SYD-MEL-INLAND`, also carrying `LINK-SYD-MEL-FIBRE-02` |
+| ACME exposure | `VPN-ACME-CORP`, 450 active users, GOLD `SLA-ACME-GOLD`, $50,000/hour |
+| BigBank exposure | `VPN-BIGBANK`, 1,200 active users, SILVER `SLA-BIGBANK-SILVER`, $25,000/hour |
+| Direct path | Both services use `MPLS-PATH-SYD-MEL-PRIMARY` |
+| Aggregate | 1,650 listed users and $75,000/hour potential SLA exposure; no proof all alternate routes are absent |
+
+Focused topology acceptance is complete on both channels. Remaining work is
+explicitly not closed by the branch merge:
+
+1. Resolve or escalate the nested Foundry/Data Agent Graph-token failure so
+   non-template topology questions can use Approach A reliably.
+2. Diagnose intermittent direct Graph read timeouts and improve failure
+   attribution without concealing them behind fallback auth errors.
+3. Confirm final end-to-end TokenOps usage/cost accounting, including the
+   distinction between direct Graph, real specialist usage and outer MCP
+   estimates. The missing `prompt_hash` / null-reservation 422 fixes are
+   implemented, but they are not the full accounting acceptance.
+4. Improve and exercise combined-intent routing and execution within the
+   Cowork budget; the current first-match router is not a complete
+   multi-domain classifier.
+5. Complete fresh Work IQ/RTI consent and evidence checks and a Web IQ run
+   after cooldown; retain source-specific failures and freshness labels.
+6. Keep Cowork summaries within returned evidence. Broader indirect
+   dependency and diverse-route coverage requires additional queries, not
+   stronger wording over the existing templates.
