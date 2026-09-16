@@ -11,8 +11,9 @@
   -> `kb-mcp-connection` -> Search knowledge-base MCP.
 - APIM required both **Azure AI Developer** and **Cognitive Services User** at
   project scope; the first role alone produced a backend 403.
-- Web IQ remains unavailable until a valid `x-apikey` is supplied. Do not claim
-  five-specialist acceptance before `web-iq-connection` exists.
+- Web IQ is configured through the `web-iq-connection` CustomKeys connection.
+  A live `noc-threatintel-agent` smoke test returned a grounded public Cisco
+  advisory; the secret itself is never committed or printed in documentation.
 - Work IQ correctly returns an OAuth consent request for the calling user.
   User interaction is required; this is not an unattended service credential.
 - Direct Fabric Graph and RTI MCP queries succeed. The nested topology Data
@@ -21,10 +22,11 @@
   `agent_initialized: true`, `durable_storage: available`, and no initialization
   error. The monitor remains deliberately disabled and unsubscribed; no alert
   has been sent.
-- The current Agent 365 package is `agent/manifest/manifest.zip`. Uploading it in
-  Microsoft 365 Admin Center, completing a real Teams turn/consent, supplying a
-  Web IQ key, and subscribing the destination conversation remain external
-  acceptance gates rather than deployment failures.
+- The current Agent 365 package is `agent/manifest/manifest.zip`, version
+  `1.1.4`. If Admin Center says a newer version is required, that exact version
+  is already installed; backend/App Service changes do not require another
+  package upload unless the manifest itself changes. Completing downstream
+  consent and subscribing the destination conversation remain acceptance gates.
 
 
 Known gotchas surfaced while researching and building this solution, recorded
@@ -34,6 +36,8 @@ here so `fix-loop` doesn't have to rediscover them.
 
 | Symptom | Cause | Resolution |
 |---|---|---|
+| `hi` works but no consent card appears | A greeting exercises only Teams -> Bot -> App Service; no delegated IQ connection was invoked | Send the focused Fabric topology, Work IQ, and RTI IQ prompts in `docs/DEPLOYMENT.md`. Open each **Sign in to ...** card immediately, finish consent as the same Teams user, and retry the same prompt. |
+| Admin Center rejects `manifest.zip` with “Must upload a newer version” | Manifest version `1.1.4` is already installed | Keep using the installed app for backend-only changes. Upload again only after a real manifest change and a version increment (for example `1.1.5`). |
 | Startup says required monitor settings are missing | `INCIDENT_MONITOR_ENABLED=true` without KQL URI/database, storage account, or state container | Set `FABRIC_KQL_QUERY_URI`, `FABRIC_KQL_DATABASE_NAME`, `AZURE_STORAGE_ACCOUNT_NAME`, and `AGENT_STATE_CONTAINER_NAME`, or return `INCIDENT_MONITOR_ENABLED=false`. |
 | Health reports enabled but not leader | Another App Service instance owns the blob lease, or storage RBAC has not propagated | One leader is expected. Check the other instance first; otherwise verify the App Service `AGENT_HOST_PRINCIPAL_ID` has Storage Blob Data Contributor on the storage account. |
 | Events are not polled | No durable subscription exists | In the intended Teams conversation, pre-consent all delegated specialists and send `/monitor subscribe`; verify `monitor_subscribed` in `/api/health`. |

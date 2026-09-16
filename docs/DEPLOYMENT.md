@@ -110,11 +110,52 @@ destination and delegated access are confirmed:
    identity **Storage Blob Data Contributor** on its storage account.
 3. In Fabric, grant `AGENT_HOST_PRINCIPAL_ID` query access to the workspace
    and Eventhouse. Fabric item/workspace authorization is not ARM-managed.
-4. In the intended Teams conversation, have the authorized operator exercise
-   Fabric IQ, Work IQ, and RTI IQ and complete every consent prompt. Then send
-   `/monitor subscribe`; this persists that exact conversation and user.
-5. Confirm `/api/health` reports `monitor_subscribed: true`. Only then set the
-   azd parameter `incidentMonitorEnabled=true` and reprovision/restart.
+4. In the intended Teams conversation, pre-consent every delegated surface.
+   Send each prompt separately; when the agent posts a **Sign in to ...** card,
+   open it immediately, sign in as the same Teams user, accept the requested
+   consent, and retry the same prompt until it returns evidence:
+   - Fabric topology: `Using Fabric IQ only, list the endpoints and conduit for LINK-SYD-MEL-FIBRE-01.`
+   - Work IQ: `Using Work IQ only, find the current on-call or incident-bridge context in my Teams and Outlook.`
+   - Fabric RTI: `Using RTI IQ only, show the IncidentEvents timeline for INC-2025-08-14-0042.`
+
+   The initial `hi` response proves the Teams/Bot/App Service path, but does not
+   pre-consent these downstream user-scoped connections. Foundry IQ and Web IQ
+   use service/key authentication and do not show user-consent cards.
+5. After those prompts succeed, send `/monitor subscribe` in that exact Teams
+   chat. The bot must reply that the conversation is subscribed. This stores
+   both the durable conversation reference and the subscribing user identity.
+6. Confirm health before enabling:
+   ```powershell
+   Invoke-RestMethod https://app-n2tjinbhnbln6.azurewebsites.net/api/health |
+     ConvertTo-Json -Depth 5
+   ```
+   Require `agent_initialized=true`, `durable_storage=available`, and
+   `monitor_subscribed=true` while `monitor.enabled` is still `false`.
+7. Enable only the monitor setting without replacing the other Agent 365 app
+   settings, restart, and recheck health:
+   ```powershell
+   az webapp config appsettings set `
+     --subscription c8a35425-69fe-4a90-bf45-4475c0adb74a `
+     --resource-group rg-noc-iq-demo `
+     --name app-n2tjinbhnbln6 `
+     --settings INCIDENT_MONITOR_ENABLED=true `
+     --output none
+   az webapp restart `
+     --subscription c8a35425-69fe-4a90-bf45-4475c0adb74a `
+     --resource-group rg-noc-iq-demo `
+     --name app-n2tjinbhnbln6
+   ```
+   Require `monitor.enabled=true`, `monitor.running=true`, and normally
+   `monitor.leader=true` after startup.
+8. Preview, then append a unique current-timestamp anomaly. The helper never
+   clears or replaces Eventhouse data:
+   ```powershell
+   python scripts\replay_monitor_anomaly.py
+   python scripts\replay_monitor_anomaly.py --execute
+   ```
+   It appends a baseline and anomalous optical reading, one critical alert, and
+   one `IncidentEvents(Stage="Detected")` trigger. Allow one poll interval plus
+   investigation time, then verify one enriched proactive Teams response.
 
 `/monitor unsubscribe` is accepted only from the subscribed user in the
 subscribed conversation. Monitoring is at-least-once and can repeat a Teams
