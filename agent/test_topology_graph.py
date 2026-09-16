@@ -55,7 +55,15 @@ def _build_agent():
 
 async def _run():
     instance = _build_agent()
-    with patch.dict(os.environ, {"FABRIC_WORKSPACE_ID": "workspace-1", "FABRIC_GRAPH_MODEL_ID": "graph-1"}):
+    with patch.dict(
+        os.environ,
+        {
+            "FABRIC_WORKSPACE_ID": "workspace-1",
+            "FABRIC_GRAPH_MODEL_ID": "graph-1",
+            "FOUNDRY_IQ_TOOLBOX_NAME": "noc-foundry-iq-gate-a",
+            "FOUNDRY_IQ_PROXY_CONNECTION_NAME": "foundry-iq-apim-proxy",
+        },
+    ):
         _Client.responses = [
             [{"LinkId": "LINK-SYD-MEL-FIBRE-01", "OriginRouter": "CORE-SYD-01", "TerminatingRouter": "CORE-MEL-01", "ConduitId": "CONDUIT-SYD-MEL-INLAND"}],
             [{"LinkId": "LINK-SYD-MEL-FIBRE-01", "ConduitId": "CONDUIT-SYD-MEL-INLAND"}, {"LinkId": "LINK-SYD-MEL-FIBRE-02", "ConduitId": "CONDUIT-SYD-MEL-INLAND"}],

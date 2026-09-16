@@ -788,13 +788,6 @@ class NocAgent(AgentInterface):
 
     async def _call_topology_graph(self, question: str) -> Optional[str]:
         """Answer focused link blast-radius questions through Fabric Graph directly."""
-        # The exact Gate A APIM/Toolbox showcase must exercise its configured
-        # route; do not bypass it with the deterministic direct Graph path.
-        if (
-            os.getenv("FOUNDRY_IQ_TOOLBOX_NAME", "").strip()
-            and os.getenv("FOUNDRY_IQ_PROXY_CONNECTION_NAME", "").strip()
-        ):
-            return None
         workspace_id = os.getenv("FABRIC_WORKSPACE_ID", "").strip()
         graph_model_id = os.getenv("FABRIC_GRAPH_MODEL_ID", "").strip()
         link_match = re.search(r"\bLINK-[A-Z0-9-]+\b", question.upper())
@@ -1020,6 +1013,7 @@ class NocAgent(AgentInterface):
         authorized_user_id: str,
         *,
         max_concurrency: int = 3,
+        event_detail: str = "",
     ) -> dict:
         """Run all five evidence families once for a subscribed detected incident.
 
@@ -1046,8 +1040,9 @@ class NocAgent(AgentInterface):
         safe_incident_id = str(incident_id).strip()
         if not safe_incident_id:
             raise ValueError("incident_id is required")
+        detail_context = f" Detection detail: {event_detail.strip()}." if event_detail.strip() else ""
         prompt = (
-            f"Investigate detected incident {safe_incident_id} at {detected_at}. "
+            f"Investigate detected incident {safe_incident_id} at {detected_at}.{detail_context} "
             "Return only evidence relevant to your specialist family, with source provenance. "
             "Do not send messages or change resources."
         )
@@ -1104,11 +1099,9 @@ class NocAgent(AgentInterface):
             "monitor-" + hashlib.sha256(f"{detected_at}\n{safe_incident_id}".encode()).hexdigest()[:24]
         )
         deadline_handle = _current_deadline.set(time.monotonic() + AGENT_RUN_TIMEOUT_SECONDS)
-        topology_handle = _disable_direct_topology.set(True)
         try:
             pairs = await asyncio.gather(*(_invoke(key) for key in SPECIALIST_AGENTS))
         finally:
-            _disable_direct_topology.reset(topology_handle)
             _current_deadline.reset(deadline_handle)
             _current_run_id.reset(run_handle)
             _current_user_ctx.reset(user_handle)

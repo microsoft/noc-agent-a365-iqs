@@ -70,6 +70,7 @@ async def check_cursor_query_and_pending():
     query = build_incident_query(config(), cursor, now)
     assert "Stage == 'Detected'" in query
     assert "IncidentId > 'INC''OOPS'" in query
+    assert "project Timestamp, IncidentId, Detail" in query
     assert "order by Timestamp asc, IncidentId asc" in query
     assert query.index("Timestamp >") < query.index("order by")
 

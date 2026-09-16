@@ -114,13 +114,15 @@ destination and delegated access are confirmed:
    Send each prompt separately; when the agent posts a **Sign in to ...** card,
    open it immediately, sign in as the same Teams user, accept the requested
    consent, and retry the same prompt until it returns evidence:
-   - Fabric topology: `Using Fabric IQ only, list the endpoints and conduit for LINK-SYD-MEL-FIBRE-01.`
-   - Work IQ: `Using Work IQ only, find the current on-call or incident-bridge context in my Teams and Outlook.`
-   - Fabric RTI: `Using RTI IQ only, show the IncidentEvents timeline for INC-2025-08-14-0042.`
+   - Fabric topology verification: `Using Fabric IQ only, list the endpoints and conduit for LINK-SYD-MEL-FIBRE-01.` This supported link template uses the App Service managed identity and direct Graph REST API, so success is expected without a consent card.
+   - Work IQ consent: `Using Work IQ only, find the current on-call or incident-bridge context in my Teams and Outlook.`
+   - Fabric RTI consent: `Using RTI IQ only, show the IncidentEvents timeline for INC-2025-08-14-0042.`
 
    The initial `hi` response proves the Teams/Bot/App Service path, but does not
-   pre-consent these downstream user-scoped connections. Foundry IQ and Web IQ
-   use service/key authentication and do not show user-consent cards.
+   pre-consent the downstream user-scoped Work IQ and RTI connections. Foundry
+   IQ and Web IQ use service/key authentication; supported focused Fabric link
+   queries use the host managed identity. Those paths do not show user-consent
+   cards.
 5. After those prompts succeed, send `/monitor subscribe` in that exact Teams
    chat. The bot must reply that the conversation is subscribed. This stores
    both the durable conversation reference and the subscribing user identity.

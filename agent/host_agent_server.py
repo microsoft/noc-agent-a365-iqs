@@ -459,6 +459,7 @@ class GenericAgentHost:
                 context,
                 subscription["authorized_user_id"],
                 max_concurrency=self.monitor_config.specialist_concurrency,
+                event_detail=event.get("detail", ""),
             )
             if investigation["status"] != "completed":
                 return

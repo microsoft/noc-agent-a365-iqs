@@ -21,12 +21,14 @@ class Context:
 def build_agent(mode="success"):
     instance = NocAgent.__new__(NocAgent)
     calls = []
+    questions = []
 
     async def exchange(self, *_args, **_kwargs):
         return "header.eyJleHAiOjQxMDI0NDQ4MDB9.signature"
 
-    async def call(self, key, _question):
+    async def call(self, key, question):
         calls.append(key)
+        questions.append(question)
         if mode == "partial" and key == "web_iq":
             raise RuntimeError("mock failure")
         if mode == "consent" and key == "work_iq":
@@ -40,37 +42,44 @@ def build_agent(mode="success"):
     instance._exchange_user_token = MethodType(exchange, instance)
     instance._call_specialist = MethodType(call, instance)
     instance._synthesize_automatic_investigation = MethodType(synthesize, instance)
-    return instance, calls
+    return instance, calls, questions
 
 
 async def invoke(instance):
     return await instance.investigate_detected_incident(
-        "INC-001", "2026-09-16T12:00:00Z", object(), "AGENTIC", Context(), "authorized-user"
+        "INC-001",
+        "2026-09-16T12:00:00Z",
+        object(),
+        "AGENTIC",
+        Context(),
+        "authorized-user",
+        event_detail="Optical loss on LINK-SYD-MEL-FIBRE-01",
     )
 
 
 async def run():
-    instance, calls = build_agent()
+    instance, calls, questions = build_agent()
     result = await invoke(instance)
     assert result["status"] == "completed"
     assert result["response"] == "enriched response"
     assert set(calls) == set(SPECIALIST_AGENTS) and len(calls) == 5
     assert all(calls.count(key) == 1 for key in SPECIALIST_AGENTS)
+    assert all("LINK-SYD-MEL-FIBRE-01" in question for question in questions)
     assert all(item["status"] == "completed" for item in result["families"].values())
 
-    instance, calls = build_agent("partial")
+    instance, calls, _ = build_agent("partial")
     result = await invoke(instance)
     assert result["status"] == "retry_required"
     assert result["families"]["web_iq"]["status"] == "unavailable"
     assert len(calls) == 5
 
-    instance, calls = build_agent("consent")
+    instance, calls, _ = build_agent("consent")
     result = await invoke(instance)
     assert result["status"] == "retry_required"
     assert result["families"]["work_iq"]["status"] == "consent_required"
     assert len(calls) == 5
 
-    instance, calls = build_agent()
+    instance, calls, _ = build_agent()
 
     async def no_token(self, *_args, **_kwargs):
         return None

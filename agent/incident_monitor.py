@@ -130,7 +130,7 @@ def build_incident_query(config: MonitorConfig, cursor: Optional[Cursor], now: d
             "| where Stage == 'Detected'",
             f"| where Timestamp >= datetime({_iso(lower)}) and Timestamp <= datetime({_iso(now)})",
             cursor_filter,
-            "| project Timestamp, IncidentId",
+            "| project Timestamp, IncidentId, Detail",
             "| order by Timestamp asc, IncidentId asc",
             f"| take {config.batch_size}",
         ]
@@ -233,7 +233,11 @@ class KustoIncidentSource:
         response = await asyncio.to_thread(self._client.execute_query, self._database, query)
         table = response.primary_results[0]
         events = [
-            {"timestamp": _iso(row["Timestamp"]), "incident_id": str(row["IncidentId"])}
+            {
+                "timestamp": _iso(row["Timestamp"]),
+                "incident_id": str(row["IncidentId"]),
+                "detail": str(row["Detail"] or ""),
+            }
             for row in table
         ]
         return sorted(events, key=lambda item: Cursor.from_event(item))
