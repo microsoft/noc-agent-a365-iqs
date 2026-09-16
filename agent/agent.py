@@ -1248,12 +1248,13 @@ class NocAgent(AgentInterface):
                     input_tokens=usage.get("input_token_count") or 0,
                     output_tokens=usage.get("output_token_count") or 0,
                 )
-            return result
+            return result, _pending_consent.get()
 
         run_task = asyncio.ensure_future(_run_turn())
         try:
-            response = await asyncio.wait_for(asyncio.shield(run_task), timeout=AGENT_RUN_TIMEOUT_SECONDS)
-            pending = _pending_consent.get()
+            response, pending = await asyncio.wait_for(
+                asyncio.shield(run_task), timeout=AGENT_RUN_TIMEOUT_SECONDS
+            )
             if pending:
                 agent_name, consent_url = pending
                 # Send the sign-in Adaptive Card directly (context is already
