@@ -33,6 +33,7 @@ from typing import Optional
 
 from azure.ai.projects import AIProjectClient
 from azure.ai.projects.models import MCPTool, PromptAgentDefinition
+from azure.core.exceptions import ResourceNotFoundError
 from azure.identity import AzureDeveloperCliCredential
 from dotenv import load_dotenv
 
@@ -180,16 +181,38 @@ def _definition_matches(
     )
 
 
+def _connection_override(spec: SpecialistSpec) -> tuple[str, str] | None:
+    """Return the explicitly enabled Foundry IQ APIM proxy, if configured."""
+    if spec.agent_name != "noc-knowledge-agent":
+        return None
+    name = os.getenv("FOUNDRY_IQ_PROXY_CONNECTION_NAME", "").strip()
+    url = os.getenv("FOUNDRY_IQ_PROXY_MCP_URL", "").strip()
+    if bool(name) != bool(url):
+        raise RuntimeError(
+            "FOUNDRY_IQ_PROXY_CONNECTION_NAME and FOUNDRY_IQ_PROXY_MCP_URL "
+            "must either both be set or both be unset."
+        )
+    return (name, url) if name else None
+
+
 def ensure_specialist_agent(project: AIProjectClient, model: str, spec: SpecialistSpec) -> None:
     if spec.server_url_env:
         connection_id = os.environ[spec.connection_env]
         server_url = os.environ[spec.server_url_env]
         log(f"  direct MCP connection -> {connection_id}")
     else:
-        connection_name = os.getenv(spec.connection_env, spec.default_connection_name)
+        proxy = _connection_override(spec)
+        connection_name = proxy[0] if proxy else os.getenv(
+            spec.connection_env, spec.default_connection_name
+        )
         connection = project.connections.get(connection_name, include_credentials=False)
         connection_id = connection.id
-        server_url = connection.target
+        server_url = proxy[1] if proxy else connection.target
+        if proxy and connection.target.rstrip("/") != server_url.rstrip("/"):
+            raise RuntimeError(
+                f"Proxy connection '{connection_name}' targets '{connection.target}', "
+                f"not FOUNDRY_IQ_PROXY_MCP_URL '{server_url}'."
+            )
         log(f"  connection '{connection_name}' -> {connection_id}")
 
     definition = PromptAgentDefinition(
@@ -212,7 +235,7 @@ def ensure_specialist_agent(project: AIProjectClient, model: str, spec: Speciali
             log(f"[OK] '{spec.agent_name}' already up to date (v{latest_version}) -- skipping")
             return
         log(f"  '{spec.agent_name}' exists but is out of date -- creating a new version")
-    except Exception:  # noqa: BLE001 -- not found (or any lookup issue): create the first version
+    except ResourceNotFoundError:
         log(f"  '{spec.agent_name}' not found -- creating")
 
     created = project.agents.create_version(spec.agent_name, definition=definition)

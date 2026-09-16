@@ -19,6 +19,15 @@ from aiohttp.web import Application, Request, Response, json_response, run_app
 from aiohttp.web_middlewares import middleware as web_middleware
 from dotenv import load_dotenv
 from agent_interface import AgentInterface, check_agent_inheritance
+from azure.identity.aio import DefaultAzureCredential
+from incident_monitor import (
+    BlobAgentsStorage,
+    BlobRepository,
+    IncidentMonitor,
+    MonitorConfig,
+    remove_subscription,
+    save_subscription,
+)
 from microsoft_agents.activity import load_configuration_from_env, Activity, ActivityTypes
 from microsoft_agents.authentication.msal import MsalConnectionManager
 from microsoft_agents.hosting.aiohttp import (
@@ -113,8 +122,28 @@ class GenericAgentHost:
         self.agent_args = agent_args
         self.agent_kwargs = agent_kwargs
         self.agent_instance = None
+        self._initialization_task = None
+        self._initialization_error = None
+        self._agent_ready = False
 
-        self.storage = MemoryStorage()
+        self.monitor_config = MonitorConfig.from_env()
+        storage_account = os.getenv("AZURE_STORAGE_ACCOUNT_NAME", "").strip()
+        state_container = os.getenv("AGENT_STATE_CONTAINER_NAME", "agent-state").strip()
+        self._blob_credential = None
+        self._blob_repository = None
+        if storage_account:
+            self._blob_credential = DefaultAzureCredential()
+            self._blob_repository = BlobRepository(
+                storage_account, state_container, self._blob_credential
+            )
+            self.storage = BlobAgentsStorage(self._blob_repository)
+            logger.info("Using durable blob-backed Agents storage")
+        elif os.getenv("WEBSITE_INSTANCE_ID") or os.getenv("WEBSITE_SITE_NAME"):
+            raise ValueError("AZURE_STORAGE_ACCOUNT_NAME is required for durable App Service state")
+        else:
+            self.storage = MemoryStorage()
+            logger.warning("Using in-memory Agents storage for local development")
+        self.incident_monitor = None
         self.connection_manager = MsalConnectionManager(**agents_sdk_config)
         self.adapter = CloudAdapter(connection_manager=self.connection_manager)
         self.authorization = Authorization(
@@ -124,11 +153,6 @@ class GenericAgentHost:
             storage=self.storage,
             adapter=self.adapter,
             authorization=self.authorization,
-            # ponytail: same in-memory MemoryStorage as everything else in this
-            # PoC -- conversation references (needed for outbound persona
-            # broadcasts, see notifications.py) are lost on app restart.
-            # Upgrade to durable Storage (Cosmos/Blob) before this graduates
-            # past PoC; see docs/OUTBOUND_NOTIFICATIONS.md.
             proactive=ProactiveOptions(storage=self.storage),
             **agents_sdk_config,
         )
@@ -216,6 +240,44 @@ class GenericAgentHost:
                 with BaggageBuilder().tenant_id(tenant_id).agent_id(agent_id).build():
                     user_message = context.activity.text or ""
                     if not user_message.strip() or user_message.strip() == "/help":
+                        return
+
+                    command = user_message.strip().casefold()
+                    if command in {"/monitor subscribe", "/monitor unsubscribe"}:
+                        if not self._blob_repository:
+                            await context.send_activity(
+                                "Monitor subscriptions require AZURE_STORAGE_ACCOUNT_NAME."
+                            )
+                            return
+                        from_prop = context.activity.from_property
+                        user_id = getattr(from_prop, "id", "") if from_prop else ""
+                        user_name = getattr(from_prop, "name", "") if from_prop else ""
+                        conversation_id = context.activity.conversation.id
+                        if command == "/monitor subscribe":
+                            await self.agent_app.proactive.store_conversation(context)
+                            await save_subscription(
+                                self._blob_repository,
+                                conversation_id,
+                                user_id,
+                                user_name or "unknown",
+                            )
+                            state = (
+                                "enabled" if self.monitor_config.enabled else "disabled"
+                            )
+                            await context.send_activity(
+                                "This conversation is subscribed to detected incidents. "
+                                f"The monitor is currently **{state}**; an operator must pre-consent "
+                                "Fabric IQ, Work IQ, and RTI IQ before enabling it."
+                            )
+                        else:
+                            removed = await remove_subscription(
+                                self._blob_repository, conversation_id, user_id
+                            )
+                            await context.send_activity(
+                                "This conversation is no longer subscribed."
+                                if removed
+                                else "This conversation had no monitor subscription."
+                            )
                         return
 
                     # Persist this conversation so a later incident-lifecycle
@@ -356,8 +418,57 @@ class GenericAgentHost:
     async def initialize_agent(self):
         if self.agent_instance is None:
             logger.info(f"🤖 Initializing {self.agent_class.__name__}...")
+            if self._blob_repository:
+                await self._blob_repository.initialize()
             self.agent_instance = self.agent_class(*self.agent_args, **self.agent_kwargs)
             await self.agent_instance.initialize()
+            if self.monitor_config.enabled:
+                self.incident_monitor = IncidentMonitor.create(
+                    self.monitor_config, self._handle_detected_incident
+                )
+                await self.incident_monitor.start()
+                logger.info("Incident monitor started")
+            self._agent_ready = True
+
+    async def _initialize_agent_background(self):
+        try:
+            await self.initialize_agent()
+        except Exception as exc:  # noqa: BLE001 -- keep health endpoint available
+            self._initialization_error = f"{type(exc).__name__}: {exc}"
+            logger.exception("Agent initialization failed")
+
+    async def schedule_agent_initialization(self, _app):
+        self._initialization_task = asyncio.create_task(
+            self._initialize_agent_background(), name="agent-initialization"
+        )
+
+    async def _handle_detected_incident(self, event: dict, subscription: dict) -> bool:
+        """Resume only the subscribed conversation and send only a complete result."""
+        result_holder = {"successful": False}
+
+        async def _handler(context: TurnContext, _state: TurnState):
+            from_prop = context.activity.from_property
+            resumed_user_id = getattr(from_prop, "id", "") if from_prop else ""
+            if resumed_user_id != subscription["authorized_user_id"]:
+                raise PermissionError("Resumed conversation user does not match monitor subscription")
+            investigation = await self.agent_instance.investigate_detected_incident(
+                event["incident_id"],
+                event["timestamp"],
+                self.agent_app.auth,
+                self.auth_handler_name,
+                context,
+                subscription["authorized_user_id"],
+                max_concurrency=self.monitor_config.specialist_concurrency,
+            )
+            if investigation["status"] != "completed":
+                return
+            await context.send_activity(investigation["response"])
+            result_holder["successful"] = True
+
+        await self.agent_app.proactive.continue_conversation(
+            self.agent_app.adapter, subscription["conversation_id"], _handler
+        )
+        return result_holder["successful"]
 
     # --- Authentication ---
     def create_auth_configuration(self) -> AgentAuthConfiguration | None:
@@ -383,6 +494,14 @@ class GenericAgentHost:
     # --- Server ---
     def start_server(self, auth_configuration: AgentAuthConfiguration | None = None):
         async def entry_point(req: Request) -> Response:
+            if not self._agent_ready:
+                return json_response(
+                    {
+                        "error": "Agent is still initializing",
+                        "initialization_error": self._initialization_error,
+                    },
+                    status=503,
+                )
             return await start_agent_process(
                 req, req.app["agent_app"], req.app["adapter"]
             )
@@ -427,11 +546,34 @@ class GenericAgentHost:
             return json_response({"results": results})
 
         async def health(_req: Request) -> Response:
+            subscribed = False
+            storage_status = "memory" if not self._blob_repository else "available"
+            if self._blob_repository:
+                try:
+                    subscribed = bool(
+                        await self._blob_repository.read_json("monitor/subscription.json")
+                    )
+                except Exception as exc:  # noqa: BLE001 -- health remains safe and non-secret
+                    storage_status = f"unavailable:{type(exc).__name__}"
             return json_response(
                 {
                     "status": "ok",
                     "agent_type": self.agent_class.__name__,
-                    "agent_initialized": self.agent_instance is not None,
+                    "agent_initialized": self._agent_ready,
+                    "agent_initialization_error": self._initialization_error,
+                    "monitor": (
+                        self.incident_monitor.health()
+                        if self.incident_monitor
+                        else {
+                            "enabled": self.monitor_config.enabled,
+                            "running": False,
+                            "leader": False,
+                            "last_poll_at": None,
+                            "last_error": None,
+                        }
+                    ),
+                    "monitor_subscribed": subscribed,
+                    "durable_storage": storage_status,
                 }
             )
 
@@ -471,7 +613,7 @@ class GenericAgentHost:
         app["agent_app"] = self.agent_app
         app["adapter"] = self.agent_app.adapter
 
-        app.on_startup.append(lambda app: self.initialize_agent())
+        app.on_startup.append(self.schedule_agent_initialization)
         app.on_shutdown.append(lambda app: self.cleanup())
 
         desired_port = int(environ.get("PORT", 3978))
@@ -500,8 +642,20 @@ class GenericAgentHost:
 
     # --- Cleanup ---
     async def cleanup(self):
+        if self._initialization_task and not self._initialization_task.done():
+            self._initialization_task.cancel()
+            try:
+                await self._initialization_task
+            except asyncio.CancelledError:
+                pass
+        if self.incident_monitor:
+            await self.incident_monitor.stop()
         if self.agent_instance:
             try:
                 await self.agent_instance.cleanup()
             except Exception as e:
                 logger.error(f"Cleanup error: {e}")
+        if self._blob_repository:
+            await self._blob_repository.close()
+        if self._blob_credential:
+            await self._blob_credential.close()

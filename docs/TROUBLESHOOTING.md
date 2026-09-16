@@ -1,7 +1,46 @@
 # Troubleshooting
 
+## September 16, 2026 partner-showcase deployment
+
+- App Service initially returned Blob `AuthorizationFailure`: Azure governance
+  disabled Storage public access after provisioning. Fixed with regional App
+  Service VNet integration, Blob Private Endpoint, and private DNS. Fabric was
+  intentionally left public for the PoC.
+- The Foundry IQ Gate A path is live and proven end to end:
+  persisted `noc-knowledge-agent` v3 -> APIM -> versioned single-tool Toolbox
+  -> `kb-mcp-connection` -> Search knowledge-base MCP.
+- APIM required both **Azure AI Developer** and **Cognitive Services User** at
+  project scope; the first role alone produced a backend 403.
+- Web IQ remains unavailable until a valid `x-apikey` is supplied. Do not claim
+  five-specialist acceptance before `web-iq-connection` exists.
+- Work IQ correctly returns an OAuth consent request for the calling user.
+  User interaction is required; this is not an unattended service credential.
+- Direct Fabric Graph and RTI MCP queries succeed. The nested topology Data
+  Agent response remains provider-limited and must not be represented as fixed.
+- After the final Teams-user RBAC deployment, `/api/health` was reverified with
+  `agent_initialized: true`, `durable_storage: available`, and no initialization
+  error. The monitor remains deliberately disabled and unsubscribed; no alert
+  has been sent.
+- The current Agent 365 package is `agent/manifest/manifest.zip`. Uploading it in
+  Microsoft 365 Admin Center, completing a real Teams turn/consent, supplying a
+  Web IQ key, and subscribing the destination conversation remain external
+  acceptance gates rather than deployment failures.
+
+
 Known gotchas surfaced while researching and building this solution, recorded
 here so `fix-loop` doesn't have to rediscover them.
+
+## Detected-incident monitor
+
+| Symptom | Cause | Resolution |
+|---|---|---|
+| Startup says required monitor settings are missing | `INCIDENT_MONITOR_ENABLED=true` without KQL URI/database, storage account, or state container | Set `FABRIC_KQL_QUERY_URI`, `FABRIC_KQL_DATABASE_NAME`, `AZURE_STORAGE_ACCOUNT_NAME`, and `AGENT_STATE_CONTAINER_NAME`, or return `INCIDENT_MONITOR_ENABLED=false`. |
+| Health reports enabled but not leader | Another App Service instance owns the blob lease, or storage RBAC has not propagated | One leader is expected. Check the other instance first; otherwise verify the App Service `AGENT_HOST_PRINCIPAL_ID` has Storage Blob Data Contributor on the storage account. |
+| Events are not polled | No durable subscription exists | In the intended Teams conversation, pre-consent all delegated specialists and send `/monitor subscribe`; verify `monitor_subscribed` in `/api/health`. |
+| An incident retries without a Teams post | Delegated identity/consent is absent, or one of five specialist families was partial/unavailable | Have the same subscribed operator invoke Fabric IQ, Work IQ, and RTI IQ interactively and complete consent. Partial automatic results are intentionally not sent. |
+| The same enriched response appears twice | At-least-once boundary: Teams accepted the send before the cursor write completed | Expected failure behavior. Deduplicate operationally by the safe incident ID; do not manually move the cursor unless the event is verified. |
+| KQL polling gets 403 while blob state works | Storage RBAC is ARM-managed, but Fabric workspace/Eventhouse query access is separate | Grant `AGENT_HOST_PRINCIPAL_ID` read/query access in the Fabric workspace/Eventhouse. |
+| A poison event stops retrying | It reached `INCIDENT_MONITOR_MAX_ATTEMPTS` and was durably dead-lettered | Inspect safe IDs/error types in `monitor/state.json`; incident content and tokens are not logged. Correct the underlying access/service issue before replaying through an approved operational process. |
 
 ## Cowork MCP works, but Fabric Data Agent graph execution regressed
 
@@ -316,6 +355,25 @@ Fabric Eventhouse. Outcome: **B2-c — not attachable.**
 |---|---|---|
 | Throwaway toolbox wrapping `fabric-iq-connection` answered `tools/list` directly (200, with an `ai.azure.com` bearer token) | The toolbox's own MCP endpoint is fine in isolation | n/a — confirms the toolbox itself isn't broken |
 | A throwaway Prompt Agent whose `MCPTool.server_url` pointed at that toolbox endpoint failed every call with `tool_user_error` → inner `401 PermissionDenied` (both under the app's default credential and under `_StaticTokenCredential` OBO injection) | `PromptAgentDefinition` only supports `tools: list[Tool]` — a Prompt Agent's own `MCPTool` cannot authenticate to a Toolbox's MCP endpoint at all, so OBO passthrough through that hop was never reachable to test | **Decision: skip the toolbox layer for `noc-incident-agent`.** It gets a direct `MCPTool(server_url=FABRIC_RTI_MCP_URL, project_connection_id=<fabric-rti-connection>)`, identical in shape to the existing `fabric_iq`/`work_iq` specialists. `scripts/create_rti_toolbox.py` (if written) stays in the repo unused/unwired, in case a future SDK version adds toolbox support to `PromptAgentDefinition`. |
+
+### Gate A Foundry IQ APIM/Toolbox re-test (not yet live)
+
+The earlier direct Prompt Agent -> Toolbox attempt above failed because the
+Prompt Agent could not authenticate to the Toolbox endpoint. The minimum Gate
+A spike deliberately tests a different chain:
+`noc-knowledge-agent -> CustomKeys RemoteTool connection -> dedicated,
+subscription-protected APIM MCP route -> APIM managed identity
+(https://ai.azure.com) -> one-tool Toolbox -> kb-mcp-connection`. It is
+disabled when `foundryIqToolboxBackendUrl` and the two connection/URL
+`FOUNDRY_IQ_PROXY_*` values are empty.
+
+Local compilation/self-checks prove only configuration shape. A 401/403 at the
+Toolbox hop remains a failed gate: confirm the APIM principal has project-scope
+access and capture request/correlation IDs without logging authorization,
+`Mcp-Session-Id`, protocol headers, or bodies. Do not work around failure by
+placing the proxy connection inside the Toolbox or by applying the inference/
+Cowork policies. This Foundry IQ service-mode test cannot prove unattended
+Work IQ, whose delegated OAuth consent limitation remains unchanged.
 
 
 

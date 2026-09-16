@@ -279,9 +279,16 @@ def seed_table(
     expected_rows: int,
 ) -> int:
     mapping_name = f"{table_name}_mapping"
+    current_rows = get_table_row_count(kusto_client, database_name, table_name)
+    if current_rows and os.getenv("FABRIC_EVENTHOUSE_RESEED", "false").lower() != "true":
+        log_message(
+            f"{table_name} already has {current_rows} rows; preserving data "
+            "(set FABRIC_EVENTHOUSE_RESEED=true to replace it)."
+        )
+        return current_rows
 
-    # ponytail: clear + reload keeps reruns deterministic; add incremental watermarks only if the demo stops being throwaway data.
-    kusto_client.execute_mgmt(database_name, f".clear table {table_name} data")
+    if current_rows:
+        kusto_client.execute_mgmt(database_name, f".clear table {table_name} data")
 
     ingest_props = IngestionProperties(
         database=database_name,
@@ -373,6 +380,8 @@ def main():
             "FABRIC_WORKSPACE_ID": workspace["id"],
             "FABRIC_EVENTHOUSE_ID": eventhouse["id"],
             "FABRIC_KQL_DB_ID": database["id"],
+            "FABRIC_KQL_QUERY_URI": database["queryServiceUri"],
+            "FABRIC_KQL_DATABASE_NAME": database["displayName"],
             "FABRIC_RTI_MCP_URL": mcp_url,
         }
     )

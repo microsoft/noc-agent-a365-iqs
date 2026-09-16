@@ -69,6 +69,7 @@ async def _run():
 
     assert len(_Client.calls) == 3
     assert all("/workspaces/workspace-1/GraphModels/graph-1/executeQuery" in call[0] for call in _Client.calls)
+    assert all(call[1]["Authorization"] == "Bearer fabric-token" for call in _Client.calls)
     assert all("LINK-SYD-MEL-FIBRE-01" in call[2] for call in _Client.calls)
     assert "CORE-SYD-01" in answer and "CORE-MEL-01" in answer
     assert "LINK-SYD-MEL-FIBRE-02" in answer

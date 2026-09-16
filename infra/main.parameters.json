@@ -26,6 +26,21 @@
     "agentHostLocation": {
       "value": "${agentHostLocation}"
     },
+    "enablePrivateStorageAccess": {
+      "value": "${enablePrivateStorageAccess=true}"
+    },
+    "enableFoundryIqGateway": {
+      "value": "${enableFoundryIqGateway=false}"
+    },
+    "foundryIqToolboxBackendUrl": {
+      "value": "${foundryIqToolboxBackendUrl=}"
+    },
+    "apimPublisherName": {
+      "value": "${apimPublisherName=NOC IQ Demo}"
+    },
+    "apimPublisherEmail": {
+      "value": "${apimPublisherEmail=admin@contoso.com}"
+    },
     "fabricCapacityLocation": {
       "value": "${fabricCapacityLocation}"
     },
@@ -43,6 +58,15 @@
     },
     "fabricGraphModelId": {
       "value": "${FABRIC_GRAPH_MODEL_ID}"
+    },
+    "fabricKqlQueryUri": {
+      "value": "${FABRIC_KQL_QUERY_URI}"
+    },
+    "fabricKqlDatabaseName": {
+      "value": "${FABRIC_KQL_DATABASE_NAME}"
+    },
+    "incidentMonitorEnabled": {
+      "value": "${incidentMonitorEnabled=false}"
     }
   }
 }

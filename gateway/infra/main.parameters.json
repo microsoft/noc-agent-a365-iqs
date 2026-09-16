@@ -53,6 +53,12 @@
     "mcpFoundryProjectResourceId": {
       "value": "${mcpFoundryProjectResourceId}"
     },
+    "foundryIqToolboxBackendUrl": {
+      "value": "${foundryIqToolboxBackendUrl=}"
+    },
+    "foundryIqToolboxProjectResourceId": {
+      "value": "${foundryIqToolboxProjectResourceId=}"
+    },
     "mcpSearchServiceResourceId": {
       "value": "${mcpSearchServiceResourceId}"
     },

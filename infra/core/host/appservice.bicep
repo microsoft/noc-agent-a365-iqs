@@ -12,6 +12,9 @@ param resourceToken string
 @description('App settings for the web app (non-secret).')
 param appSettings object = {}
 
+@description('Optional regional VNet integration subnet resource ID.')
+param virtualNetworkSubnetId string = ''
+
 resource plan 'Microsoft.Web/serverfarms@2023-12-01' = {
   name: 'asp-${resourceToken}'
   location: location
@@ -37,6 +40,7 @@ resource webApp 'Microsoft.Web/sites@2023-12-01' = {
   properties: {
     serverFarmId: plan.id
     httpsOnly: true
+    virtualNetworkSubnetId: empty(virtualNetworkSubnetId) ? null : virtualNetworkSubnetId
     siteConfig: {
       linuxFxVersion: 'PYTHON|3.13'
       appCommandLine: 'python start_with_generic_host.py'

@@ -66,6 +66,60 @@ This creates, in a new resource group (`rg-<AZURE_ENV_NAME>` by default):
 
 Capture the outputs — `azd env get-values` prints them all, including
 `AZURE_AI_PROJECT_ENDPOINT`, the Search endpoint, and the agent host name.
+It also prints `AGENT_HOST_PRINCIPAL_ID`, which is the identity to grant
+Fabric workspace/Eventhouse read access if that principal ID was not already
+recorded for the environment.
+
+### Current partner-showcase deployment (September 16, 2026)
+
+The non-destructive base deployment currently uses resource group
+`rg-noc-iq-demo`: Foundry is in East US 2, Basic Search is in Sweden Central,
+and the B1 Linux App Service is in West US 3. The regional split was required
+because Search capacity was unavailable in East US 2/West US 3 and the East US
+2 B1 App Service quota was zero. The host is
+`https://app-n2tjinbhnbln6.azurewebsites.net`; its managed identity is
+`c010ca2f-55c5-486e-a6d6-54747b3d2e72`. Governance disabled public Storage
+access, so the host uses VNet integration plus a Blob Private Endpoint; Fabric
+remains public for this PoC. The dedicated F2 capacity `fabricn2tjinbhnbln6`
+is active in West US 3 and workspace `NOC-Topology-adcea30f` is assigned to it.
+The public BasicV2 APIM proof endpoint is
+`https://apim-noc-n2tjinbhnbln6.azure-api.net/specialists/foundry-iq/mcp`.
+The monitor remains disabled and no Teams notification has been sent. Do not
+treat these values as portable to a new environment.
+
+### Optional detected-incident monitor (disabled by default)
+
+The App Service monitor is provisioned **off** and must stay off until its
+destination and delegated access are confirmed:
+
+1. Run `python scripts/create_eventhouse.py`. In addition to its existing
+   Eventhouse/table behavior, it persists `FABRIC_KQL_QUERY_URI` and
+   `FABRIC_KQL_DATABASE_NAME` to the root `.env`. Existing table data is
+   preserved by default; set `FABRIC_EVENTHOUSE_RESEED=true` only when an
+   intentional full demo-data replacement is required.
+2. Import those values into the azd environment, then re-run provisioning so
+   the non-secret settings reach App Service:
+   ```bash
+   set -a; source .env; set +a
+   azd env set FABRIC_KQL_QUERY_URI "$FABRIC_KQL_QUERY_URI"
+   azd env set FABRIC_KQL_DATABASE_NAME "$FABRIC_KQL_DATABASE_NAME"
+   azd provision
+   ```
+   Bicep
+   creates the private `agent-state` container and grants the App Service
+   identity **Storage Blob Data Contributor** on its storage account.
+3. In Fabric, grant `AGENT_HOST_PRINCIPAL_ID` query access to the workspace
+   and Eventhouse. Fabric item/workspace authorization is not ARM-managed.
+4. In the intended Teams conversation, have the authorized operator exercise
+   Fabric IQ, Work IQ, and RTI IQ and complete every consent prompt. Then send
+   `/monitor subscribe`; this persists that exact conversation and user.
+5. Confirm `/api/health` reports `monitor_subscribed: true`. Only then set the
+   azd parameter `incidentMonitorEnabled=true` and reprovision/restart.
+
+`/monitor unsubscribe` is accepted only from the subscribed user in the
+subscribed conversation. Monitoring is at-least-once and can repeat a Teams
+update if the process stops after send but before cursor persistence. Do not
+enable Azure Monitor alerts or another notification trigger for this slice.
 
 ## 2b. Export outputs to a root `.env` file (required before steps 3-6)
 
@@ -294,6 +348,38 @@ that's already up to date, only publishing a new version where something
 actually changed. `agent/agent.py`'s `SPECIALIST_AGENTS` map resolves these
 five by name at startup -- run this **before** step 8 on a fresh environment,
 or the orchestrator's tool calls will fail with "agent not found".
+
+#### Gate A proof spike: Foundry IQ through APIM and one native Toolbox
+
+This is an opt-in proof gate, not the production five-specialist architecture,
+and has not passed live validation. Defaults above remain unchanged.
+
+1. Run `python scripts/create_foundry_toolbox_spike.py`. It creates or reuses
+   one exact-version Toolbox containing only `kb-mcp-connection` and prints
+   `FOUNDRY_IQ_TOOLBOX_MCP_URL` without credentials.
+2. Pass that exact URL as gateway deployment parameter
+   `foundryIqToolboxBackendUrl`. Pass the hosting project's ARM resource ID as
+   `foundryIqToolboxProjectResourceId` to grant the APIM identity the existing
+   project-scoped roles; if omitted, grant equivalent project access before
+   testing. An empty backend URL creates no Gate A API.
+3. After APIM exists, set `FOUNDRY_IQ_PROXY_CONNECTION_NAME` and
+   `FOUNDRY_IQ_PROXY_MCP_URL` (the gateway output ending in
+   `/specialists/foundry-iq/mcp`) plus the documented ARM/project metadata.
+   Retrieve the dedicated key from the Key Vault URI output
+   `FOUNDRY_IQ_PROXY_APIM_SUBSCRIPTION_KEY_SECRET_URI` into
+   `FOUNDRY_IQ_PROXY_APIM_SUBSCRIPTION_KEY` without printing or committing it,
+   then rerun the spike script. It creates/updates a separate `CustomKeys`
+   RemoteTool connection; APIM, not that connection, obtains the Toolbox
+   backend token with its managed identity.
+4. Run `create_foundry_agents.py` with both proxy variables set. Only
+   `noc-knowledge-agent` changes; either variable missing fails closed and
+   neither set preserves the original direct `kb-mcp-connection`.
+
+Do not expand this to the other four specialists until a live
+`Prompt Agent -> APIM -> Toolbox -> Foundry IQ MCP` invocation succeeds.
+Work IQ remains delegated OAuth and requires an interactive user consent
+context; this service-mode Foundry IQ proof does not establish unattended
+Work IQ support.
 
 ## 5. Web IQ
 

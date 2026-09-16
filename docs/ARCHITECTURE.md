@@ -54,6 +54,34 @@ and user attribution per tool call. The application enforces Cowork's
 sub-30-second contract with a maximum 28-second timeout. See
 [`COWORK_MCP.md`](COWORK_MCP.md).
 
+## Disabled App Service detected-incident monitor
+
+`agent/incident_monitor.py` is a focused, optional polling slice hosted in the
+existing App Service process. It queries `IncidentEvents` for `Stage ==
+"Detected"` in deterministic `(Timestamp, IncidentId)` order, under the App
+Service managed identity. One blob lease elects a leader across scaled-out
+instances. The same private `agent-state` container durably stores the Agents
+SDK conversation references, the single explicit monitor subscription, the
+compound cursor, pending work, and dead letters; no custom queue or public
+callback endpoint is introduced.
+
+Delivery is **at least once**. Each event is written as pending before the
+cursor can advance, and pending work is resumed before another KQL poll.
+Failures retry up to `INCIDENT_MONITOR_MAX_ATTEMPTS`, then advance through a
+safe-ID-only dead-letter record so one poison event cannot block catch-up.
+Polling uses a first-run lookback, bounded catch-up window, overlap, and batch
+limit. Cancellation or lease loss stops new work and releases leadership
+without marking in-flight work complete.
+
+The monitor remains off unless `INCIDENT_MONITOR_ENABLED=true`. An operator
+must first send `/monitor subscribe` in the exact Teams conversation that
+should receive updates and must pre-consent the delegated Fabric IQ, Work IQ,
+and RTI IQ surfaces. Every detected event invokes all five persisted
+specialists exactly once with bounded concurrency; only a successful
+all-family result is synthesized by a tool-free agent and posted to Teams.
+Missing delegated identity, missing consent, or a partial family result is a
+retry—not a service-identity fallback and not a partial notification.
+
 ## Components
 
 ```

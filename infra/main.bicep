@@ -62,6 +62,15 @@ param fabricWorkspaceId string = ''
 @description('Fabric GraphModel GUID used by the direct Graph topology fallback.')
 param fabricGraphModelId string = ''
 
+@description('Fabric Eventhouse KQL query service URI. Persisted by scripts/create_eventhouse.py.')
+param fabricKqlQueryUri string = ''
+
+@description('Fabric Eventhouse KQL database display name. Persisted by scripts/create_eventhouse.py.')
+param fabricKqlDatabaseName string = ''
+
+@description('Enable detected-incident polling. Off until a destination subscribes and delegated consent is confirmed.')
+param incidentMonitorEnabled bool = false
+
 @description('Microsoft web MCP endpoint for Web IQ.')
 param webIqMcpEndpoint string = 'https://api.microsoft.ai/v3/mcp'
 
@@ -74,6 +83,21 @@ param searchServiceLocation string = ''
 
 @description('Region for the App Service plan/web app, in case the primary region lacks compute quota.')
 param agentHostLocation string = ''
+
+@description('Create App Service VNet integration and a Blob private endpoint. Required when governance disables Storage public access.')
+param enablePrivateStorageAccess bool = true
+
+@description('Deploy the public PoC APIM passthrough for the versioned Foundry IQ Toolbox.')
+param enableFoundryIqGateway bool = false
+
+@description('Exact versioned Foundry IQ Toolbox MCP URL.')
+param foundryIqToolboxBackendUrl string = ''
+
+@description('APIM publisher display name.')
+param apimPublisherName string = 'NOC IQ Demo'
+
+@description('APIM publisher email.')
+param apimPublisherEmail string = 'admin@contoso.com'
 
 @description('ISO date after which this resource group should be deleted (demo teardown marker).')
 param deleteByDate string = ''
@@ -112,6 +136,7 @@ var deployments = empty(configuredDeployments) ? fallbackDeployments : configure
 var chatDeployments = filter(deployments, deployment => deployment.model.name != 'text-embedding-3-small')
 var embeddingDeployments = filter(deployments, deployment => deployment.model.name == 'text-embedding-3-small')
 var resourceToken = uniqueString(subscription().id, resourceGroupName, location)
+var effectiveAgentHostLocation = empty(agentHostLocation) ? location : agentHostLocation
 var tags = union(
   {
     'azd-env-name': environmentName
@@ -145,6 +170,32 @@ module aiProject 'core/ai/ai-project.bicep' = {
   }
 }
 
+module agentStorageNetwork 'core/network/appservice-storage-private.bicep' = if (enablePrivateStorageAccess) {
+  scope: rg
+  name: 'agent-storage-network'
+  params: {
+    location: effectiveAgentHostLocation
+    tags: tags
+    resourceToken: resourceToken
+    storageAccountId: aiProject.outputs.storage.accountId
+  }
+}
+
+module foundryIqGateway 'core/gateway/foundry-iq-apim.bicep' = if (enableFoundryIqGateway) {
+  scope: rg
+  name: 'foundry-iq-gateway'
+  params: {
+    location: effectiveAgentHostLocation
+    tags: tags
+    resourceToken: resourceToken
+    publisherName: apimPublisherName
+    publisherEmail: apimPublisherEmail
+    toolboxBackendUrl: foundryIqToolboxBackendUrl
+    aiAccountName: aiProject.outputs.aiServicesAccountName
+    aiProjectName: aiProject.outputs.projectName
+  }
+}
+
 module fabricCapacity 'core/fabric/fabric-capacity.bicep' = if (enableFabricCapacity) {
   scope: rg
   name: 'fabric-capacity'
@@ -161,11 +212,13 @@ module agentHost 'core/host/appservice.bicep' = {
   scope: rg
   name: 'agent-host'
   params: {
-    location: empty(agentHostLocation) ? location : agentHostLocation
+    location: effectiveAgentHostLocation
     tags: tags
     resourceToken: resourceToken
+    virtualNetworkSubnetId: enablePrivateStorageAccess ? agentStorageNetwork!.outputs.integrationSubnetId : ''
     appSettings: {
       SCM_DO_BUILD_DURING_DEPLOYMENT: 'true'
+      WEBSITE_VNET_ROUTE_ALL: enablePrivateStorageAccess ? '1' : '0'
       FOUNDRY_PROJECT_ENDPOINT: aiProject.outputs.AZURE_AI_PROJECT_ENDPOINT
       AZURE_AI_MODEL_DEPLOYMENT_NAME: string(chatDeployments[0].name)
       AZURE_AI_SEARCH_SERVICE_ENDPOINT: aiProject.outputs.search.serviceEndpoint
@@ -175,6 +228,19 @@ module agentHost 'core/host/appservice.bicep' = {
       FABRIC_TENANT_ID: tenant().tenantId
       FABRIC_WORKSPACE_ID: fabricWorkspaceId
       FABRIC_GRAPH_MODEL_ID: fabricGraphModelId
+      FABRIC_KQL_QUERY_URI: fabricKqlQueryUri
+      FABRIC_KQL_DATABASE_NAME: fabricKqlDatabaseName
+      AZURE_STORAGE_ACCOUNT_NAME: aiProject.outputs.storage.accountName
+      AGENT_STATE_CONTAINER_NAME: aiProject.outputs.storage.agentStateContainerName
+      INCIDENT_MONITOR_ENABLED: string(incidentMonitorEnabled)
+      INCIDENT_MONITOR_POLL_SECONDS: '30'
+      INCIDENT_MONITOR_FIRST_LOOKBACK_MINUTES: '15'
+      INCIDENT_MONITOR_MAX_CATCHUP_MINUTES: '120'
+      INCIDENT_MONITOR_OVERLAP_SECONDS: '30'
+      INCIDENT_MONITOR_BATCH_SIZE: '20'
+      INCIDENT_MONITOR_MAX_ATTEMPTS: '3'
+      INCIDENT_MONITOR_LEASE_SECONDS: '60'
+      INCIDENT_MONITOR_SPECIALIST_CONCURRENCY: '3'
       // Must match the handler name used in the
       // AGENTAPPLICATION__USERAUTHORIZATION__HANDLERS__<name>__SETTINGS__*
       // settings written by `a365 setup all` (see docs/DEPLOYMENT.md step 9).
@@ -191,6 +257,15 @@ module agentHost 'core/host/appservice.bicep' = {
       // see docs/TROUBLESHOOTING.md.
       AGENT_RUN_TIMEOUT_SECONDS: '180'
     }
+  }
+}
+
+module agentHostStorageRbac 'core/storage/rbac.bicep' = {
+  scope: rg
+  name: 'agent-host-storage-rbac'
+  params: {
+    storageAccountName: aiProject.outputs.storage.accountName
+    principalId: agentHost.outputs.principalId
   }
 }
 
@@ -235,3 +310,6 @@ output AZURE_TENANT_ID string = tenant().tenantId
 
 output AGENT_HOST_APP_NAME string = agentHost.outputs.webAppName
 output AGENT_HOST_HOSTNAME string = agentHost.outputs.webAppHostName
+output AGENT_HOST_PRINCIPAL_ID string = agentHost.outputs.principalId
+output FOUNDRY_IQ_GATEWAY_URL string = enableFoundryIqGateway ? foundryIqGateway!.outputs.gatewayUrl : ''
+output FOUNDRY_IQ_GATEWAY_NAME string = enableFoundryIqGateway ? foundryIqGateway!.outputs.name : ''

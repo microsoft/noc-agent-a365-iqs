@@ -230,6 +230,8 @@ output search object = {
 }
 output storage object = {
   accountName: storage.outputs.storageAccountName
+  accountId: storage.outputs.storageAccountId
+  agentStateContainerName: storage.outputs.agentStateContainerName
   connectionName: storage.outputs.storageConnectionName
 }
 

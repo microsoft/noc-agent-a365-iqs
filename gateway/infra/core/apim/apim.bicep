@@ -88,6 +88,9 @@ param adminUiBaseUrl string = ''
 @description('Base URL of the Cowork MCP Container App. Empty skips the MCP APIs.')
 param mcpHostBaseUrl string = ''
 
+@description('Exact versioned Foundry IQ Toolbox MCP URL. Empty disables the Gate A passthrough API.')
+param foundryIqToolboxBackendUrl string = ''
+
 @description('Run-scoped token-per-minute limit enforced before the ledger hop.')
 param runTokensPerMinute int
 
@@ -110,6 +113,7 @@ var skuBaseName = length(skuParts) > 1 ? skuParts[0] : skuName
 var skuCapacity = length(skuParts) > 1 ? int(skuParts[1]) : 1
 var openaiPolicyTemplate = loadTextContent('../../policies/openai-pipeline.xml')
 var foundryPolicyTemplate = loadTextContent('../../policies/foundry-pipeline.xml')
+var foundryIqMcpPolicyTemplate = loadTextContent('../../policies/foundry-iq-mcp-passthrough.xml')
 var jwtBlock = clientAuthMode == 'entra-id' ? '<validate-jwt header-name="Authorization" output-token-variable-name="entraJwt" failed-validation-httpcode="401" failed-validation-error-message="Unauthorized"><openid-config url="${environment().authentication.loginEndpoint}${entraTenantId}/v2.0/.well-known/openid-configuration" /><audiences><audience>${entraApiAudience}</audience></audiences><require-scheme>Bearer</require-scheme></validate-jwt>' : ''
 var allowedModelsJson = string(allowedModels)
 // ponytail: allowedModelsJson is substituted into an XML attribute (value="...") in the
@@ -126,6 +130,9 @@ var runLedgerBaseUrlNamedValueReference = '{{${runLedgerBaseUrlNamedValueName}}}
 var runTokenSigningKeyNamedValueReference = '{{${runTokenSigningKeyNamedValueName}}}'
 var adminUiEnabled = !empty(adminUiBaseUrl)
 var mcpHostEnabled = !empty(mcpHostBaseUrl)
+var foundryIqMcpEnabled = !empty(foundryIqToolboxBackendUrl)
+var foundryIqToolboxBackendUrlXmlSafe = replace(replace(foundryIqToolboxBackendUrl, '&', '&amp;'), '"', '&quot;')
+var foundryIqMcpPolicy = replace(foundryIqMcpPolicyTemplate, '{{FOUNDRY_IQ_TOOLBOX_BACKEND_URL}}', foundryIqToolboxBackendUrlXmlSafe)
 // ponytail: container-apps.bicep's adminUiFqdn output already includes the https:// scheme
 // (unlike runLedger's bare-FQDN appFqdn output) -- use it as-is, don't double-prefix it.
 var adminUiBackendUrl = adminUiBaseUrl
@@ -328,7 +335,7 @@ resource mcpApi 'Microsoft.ApiManagement/service/apis@2024-05-01' = if (mcpHostE
     protocols: [
       'https'
     ]
-    subscriptionRequired: false
+    subscriptionRequired: true
   }
 }
 
@@ -412,6 +419,57 @@ resource mcpDiagnostics 'Microsoft.ApiManagement/service/apis/diagnostics@2024-0
     metrics: true
     verbosity: 'information'
     httpCorrelationProtocol: 'W3C'
+  }
+}
+
+resource foundryIqMcpApi 'Microsoft.ApiManagement/service/apis@2024-05-01' = if (foundryIqMcpEnabled) {
+  parent: apim
+  name: 'foundry-iq-mcp-gate-a'
+  properties: {
+    path: 'specialists/foundry-iq/mcp'
+    displayName: 'Foundry IQ MCP Gate A passthrough'
+    protocols: [
+      'https'
+    ]
+    subscriptionRequired: true
+  }
+}
+
+resource foundryIqMcpOperations 'Microsoft.ApiManagement/service/apis/operations@2024-05-01' = [for method in mcpPassthroughMethods: if (foundryIqMcpEnabled) {
+  parent: foundryIqMcpApi
+  name: 'foundry-iq-mcp-${toLower(method)}'
+  properties: {
+    displayName: 'Foundry IQ MCP ${method}'
+    method: method
+    urlTemplate: '/'
+  }
+}]
+
+resource foundryIqMcpApiPolicy 'Microsoft.ApiManagement/service/apis/policies@2024-05-01' = if (foundryIqMcpEnabled) {
+  parent: foundryIqMcpApi
+  name: 'policy'
+  properties: {
+    format: 'xml'
+    value: foundryIqMcpPolicy
+  }
+}
+
+resource foundryIqMcpSubscription 'Microsoft.ApiManagement/service/subscriptions@2024-05-01' = if (foundryIqMcpEnabled) {
+  parent: apim
+  name: 'foundry-iq-gate-a'
+  properties: {
+    displayName: 'foundry-iq-gate-a'
+    scope: foundryIqMcpApi.id
+    state: 'active'
+    allowTracing: false
+  }
+}
+
+resource foundryIqMcpSubscriptionKeySecret 'Microsoft.KeyVault/vaults/secrets@2024-11-01' = if (foundryIqMcpEnabled) {
+  parent: keyVault
+  name: 'apim-foundry-iq-gate-a-subscription-key'
+  properties: {
+    value: foundryIqMcpSubscription!.listSecrets().primaryKey
   }
 }
 
@@ -694,6 +752,8 @@ output gatewayUrl string = 'https://${apim.name}.azure-api.net'
 output ledgerGatewayUrl string = 'https://${apim.name}.azure-api.net/ledger'
 output adminUiGatewayUrl string = adminUiEnabled ? 'https://${apim.name}.azure-api.net/admin' : ''
 output mcpGatewayUrl string = mcpHostEnabled ? 'https://${apim.name}.azure-api.net/mcp' : ''
+output foundryIqMcpGatewayUrl string = foundryIqMcpEnabled ? 'https://${apim.name}.azure-api.net/specialists/foundry-iq/mcp' : ''
+output foundryIqMcpSubscriptionKeySecretUri string = foundryIqMcpEnabled ? foundryIqMcpSubscriptionKeySecret!.properties.secretUri : ''
 output mcpProtectedResourceMetadataUrl string = mcpHostEnabled ? 'https://${apim.name}.azure-api.net/.well-known/oauth-protected-resource/mcp' : ''
 output appServiceSubscriptionKeySecretUri string = appServiceSubscriptionKeySecret.properties.secretUri
 output privateIpAddress string = !empty(apim.properties.privateIPAddresses) ? apim.properties.privateIPAddresses[0] : ''
