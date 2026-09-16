@@ -8,7 +8,7 @@ os.environ.setdefault("FOUNDRY_PROJECT_ENDPOINT", "https://example.invalid/api/p
 os.environ.setdefault("AZURE_AI_MODEL_DEPLOYMENT_NAME", "dummy-model")
 
 import agent as agent_module  # noqa: E402
-from agent import NocAgent, SPECIALIST_AGENTS  # noqa: E402
+from agent import NocAgent, SPECIALIST_AGENTS, _extract_oauth_consent_url  # noqa: E402
 
 
 class Context:
@@ -78,6 +78,13 @@ async def run():
     assert result["status"] == "retry_required"
     assert result["families"]["work_iq"]["status"] == "consent_required"
     assert len(calls) == 5
+
+    assert _extract_oauth_consent_url(
+        SimpleNamespace(output=[SimpleNamespace(type="oauth_consent_request", consent_link="https://typed.invalid")])
+    ) == "https://typed.invalid"
+    assert _extract_oauth_consent_url({
+        "response": {"output": [{"type": "oauth_consent_request", "consentLink": "https://dict.invalid"}]}
+    }) == "https://dict.invalid"
 
     instance, calls, _ = build_agent()
 

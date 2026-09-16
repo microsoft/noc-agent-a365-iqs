@@ -518,18 +518,42 @@ def _build_consent_activity(consent_url: str, surface_label: str) -> Activity:
 
 
 def _extract_oauth_consent_url(response) -> Optional[str]:
-    """Pull an OAuth identity-passthrough consent link out of a Prompt Agent response, if present.
+    """Pull an OAuth identity-passthrough consent link from a Prompt response.
 
-    Persisted Prompt Agents surface a first-use consent requirement as an
-    `oauth_consent_request`-typed item inside a normal (200 OK)
-    `response.output` list, under `consent_link` -- NOT as a raised
-    exception (that was the old client-side-MCP `a2a_preview` error shape
-    this replaces; see docs/ARCHITECTURE.md).
+    The SDK has returned both typed model objects and plain dictionaries across
+    preview versions, so accept either representation. Some responses also
+    nest the consent payload under an ``output``/``response`` wrapper.
     """
-    for item in getattr(response, "output", None) or []:
-        if getattr(item, "type", None) == "oauth_consent_request":
-            return getattr(item, "consent_link", None)
-    return None
+    def field(value, name):
+        if isinstance(value, dict):
+            return value.get(name)
+        return getattr(value, name, None)
+
+    def walk(value):
+        if isinstance(value, (list, tuple)):
+            for child in value:
+                found = walk(child)
+                if found:
+                    return found
+            return None
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return None
+        item_type = field(value, "type")
+        if item_type == "oauth_consent_request":
+            return field(value, "consent_link") or field(value, "consentLink")
+        if isinstance(value, dict):
+            for name in ("output", "response", "data"):
+                found = walk(value.get(name))
+                if found:
+                    return found
+        else:
+            for name in ("output", "response", "data"):
+                found = walk(field(value, name))
+                if found:
+                    return found
+        return None
+
+    return walk(response)
 
 
 
@@ -1000,7 +1024,10 @@ class NocAgent(AgentInterface):
         consent_url = _extract_oauth_consent_url(response)
         if consent_url:
             _pending_consent.set((agent_name, consent_url))
-            return f"({agent_name} requires the user to sign in first; a consent link has been sent.)"
+            return (
+                f"({agent_name} requires the user to sign in first. "
+                f"Open this sign-in link: {consent_url})"
+            )
         return response.output_text or f"({agent_name} returned no answer.)"
 
     async def investigate_detected_incident(
@@ -1059,6 +1086,7 @@ class NocAgent(AgentInterface):
                             "status": "consent_required",
                             "agent": SPECIALIST_AGENTS[key][0],
                             "provenance": key,
+                            "consent_url": pending[1],
                         }
                     if "currently unavailable:" in answer:
                         return key, {
@@ -1116,6 +1144,13 @@ class NocAgent(AgentInterface):
             "families": families,
             "provenance": [SPECIALIST_AGENTS[key][0] for key in SPECIALIST_AGENTS],
         }
+        consent = next(
+            (item for item in families.values() if item.get("status") == "consent_required" and item.get("consent_url")),
+            None,
+        )
+        if consent:
+            result["consent_url"] = consent["consent_url"]
+            result["consent_agent"] = consent["agent"]
         if complete:
             result["response"] = await self._synthesize_automatic_investigation(result)
         return result
