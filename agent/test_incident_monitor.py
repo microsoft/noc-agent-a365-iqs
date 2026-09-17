@@ -4,8 +4,10 @@ import asyncio
 import copy
 from datetime import datetime, timezone
 
+import incident_monitor
 from incident_monitor import (
     STATE_BLOB,
+    BlobRepository,
     Cursor,
     IncidentMonitor,
     MonitorConfig,
@@ -186,10 +188,46 @@ async def check_cancel_and_lease_loss():
     assert repository.lease.released
 
 
+async def check_existing_leader_blob_is_not_rewritten():
+    class ExistingBlob:
+        async def exists(self):
+            return True
+
+        async def upload_blob(self, *_args, **_kwargs):
+            raise AssertionError("existing leased blob must not be rewritten")
+
+    class Container:
+        def __init__(self):
+            self.blob = ExistingBlob()
+
+        def get_blob_client(self, name):
+            assert name == incident_monitor.LEASE_BLOB
+            return self.blob
+
+    class Lease:
+        def __init__(self, blob):
+            assert blob is repository._container.blob
+            self.duration = None
+
+        async def acquire(self, lease_duration):
+            self.duration = lease_duration
+
+    repository = BlobRepository.__new__(BlobRepository)
+    repository._container = Container()
+    original_lease_client = incident_monitor.BlobLeaseClient
+    incident_monitor.BlobLeaseClient = Lease
+    try:
+        lease = await repository.acquire_lease(60)
+    finally:
+        incident_monitor.BlobLeaseClient = original_lease_client
+    assert lease.duration == 60
+
+
 async def run():
     await check_cursor_query_and_pending()
     await check_resume_retry_dead_letter_and_subscription()
     await check_cancel_and_lease_loss()
+    await check_existing_leader_blob_is_not_rewritten()
 
 
 if __name__ == "__main__":

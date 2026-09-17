@@ -172,10 +172,11 @@ class BlobRepository:
 
     async def acquire_lease(self, duration: int) -> BlobLeaseClient:
         blob = self._container.get_blob_client(LEASE_BLOB)
-        try:
-            await blob.upload_blob(b"", overwrite=False)
-        except ResourceExistsError:
-            pass
+        if not await blob.exists():
+            try:
+                await blob.upload_blob(b"", overwrite=False)
+            except ResourceExistsError:
+                pass
         lease = BlobLeaseClient(blob)
         await lease.acquire(lease_duration=duration)
         return lease

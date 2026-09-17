@@ -467,7 +467,10 @@ class GenericAgentHost:
             result_holder["successful"] = True
 
         await self.agent_app.proactive.continue_conversation(
-            self.agent_app.adapter, subscription["conversation_id"], _handler
+            self.agent_app.adapter,
+            subscription["conversation_id"],
+            _handler,
+            token_handlers=[self.auth_handler_name] if self.auth_handler_name else None,
         )
         return result_holder["successful"]
 
