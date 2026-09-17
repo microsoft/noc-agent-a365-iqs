@@ -1,7 +1,7 @@
 # Copyright (c) Microsoft. All rights reserved.
 
 """
-NOC Agent — MAF orchestrator delegating to four persisted Foundry Prompt Agents.
+NOC Agent — MAF orchestrator delegating to five persisted Foundry Prompt Agents.
 
 **Multi-agent design** (see docs/ARCHITECTURE.md for the full rationale and
 migration history from the single-agent/single-toolbox design). Each IQ
@@ -113,7 +113,7 @@ PROJECT_ENDPOINT = os.environ["FOUNDRY_PROJECT_ENDPOINT"]
 MODEL_DEPLOYMENT_NAME = os.environ["AZURE_AI_MODEL_DEPLOYMENT_NAME"]
 AZURE_TENANT_ID = os.getenv("AZURE_TENANT_ID")
 
-# The 4 persisted Foundry Prompt Agents this orchestrator delegates to (see
+# The 5 persisted Foundry Prompt Agents this orchestrator delegates to (see
 # scripts/create_foundry_agents.py, which provisions them, and the module
 # docstring). Each agent name maps 1:1 to one IQ surface / connection.
 KNOWLEDGE_AGENT_NAME = os.getenv("NOC_KNOWLEDGE_AGENT_NAME", "noc-knowledge-agent")
@@ -134,8 +134,8 @@ SPECIALIST_AGENTS: dict[str, tuple[str, bool]] = {
 }
 RUN_LEDGER_AGENT_NAME = "noc-agent"
 
-# OBO token scope used to call each specialist agent's endpoint as the
-# calling Teams user (fabric_iq/work_iq only). Agent Service performs its own
+# OBO token scope used to call each delegated specialist agent's endpoint as
+# the calling Teams user (fabric_iq/work_iq/rti_iq). Agent Service performs its own
 # server-side OAuth exchange from this identity to each UserEntraToken tool
 # connection's real audience, so a single ai.azure.com-scoped token is enough
 # for both user-scoped specialists -- no separate per-tool token exchange
@@ -518,18 +518,42 @@ def _build_consent_activity(consent_url: str, surface_label: str) -> Activity:
 
 
 def _extract_oauth_consent_url(response) -> Optional[str]:
-    """Pull an OAuth identity-passthrough consent link out of a Prompt Agent response, if present.
+    """Pull an OAuth identity-passthrough consent link from a Prompt response.
 
-    Persisted Prompt Agents surface a first-use consent requirement as an
-    `oauth_consent_request`-typed item inside a normal (200 OK)
-    `response.output` list, under `consent_link` -- NOT as a raised
-    exception (that was the old client-side-MCP `a2a_preview` error shape
-    this replaces; see docs/ARCHITECTURE.md).
+    The SDK has returned both typed model objects and plain dictionaries across
+    preview versions, so accept either representation. Some responses also
+    nest the consent payload under an ``output``/``response`` wrapper.
     """
-    for item in getattr(response, "output", None) or []:
-        if getattr(item, "type", None) == "oauth_consent_request":
-            return getattr(item, "consent_link", None)
-    return None
+    def field(value, name):
+        if isinstance(value, dict):
+            return value.get(name)
+        return getattr(value, name, None)
+
+    def walk(value):
+        if isinstance(value, (list, tuple)):
+            for child in value:
+                found = walk(child)
+                if found:
+                    return found
+            return None
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return None
+        item_type = field(value, "type")
+        if item_type == "oauth_consent_request":
+            return field(value, "consent_link") or field(value, "consentLink")
+        if isinstance(value, dict):
+            for name in ("output", "response", "data"):
+                found = walk(value.get(name))
+                if found:
+                    return found
+        else:
+            for name in ("output", "response", "data"):
+                found = walk(field(value, name))
+                if found:
+                    return found
+        return None
+
+    return walk(response)
 
 
 
@@ -611,6 +635,43 @@ _next_run_step: contextvars.ContextVar[Optional[Callable[[], str]]] = contextvar
 _current_user_ctx: contextvars.ContextVar[Optional[tuple[str, str]]] = contextvars.ContextVar(
     "_current_user_ctx", default=None
 )
+_disable_direct_topology: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "_disable_direct_topology", default=False
+)
+
+
+def _emit_usage_event(
+    *,
+    agent_name: str,
+    model_name: str,
+    input_tokens: int,
+    output_tokens: int,
+    cached_tokens: int = 0,
+    reasoning_tokens: int = 0,
+    query: str = "",
+    usage_kind: str = "specialist",
+    accounting_mode: str = "actual",
+) -> None:
+    """Emit one consistently classified TokenOps accounting record."""
+    user_id_ctx, user_name_ctx = _current_user_ctx.get() or ("unknown", "unknown")
+    logger.info(
+        "usage_event",
+        extra={
+            "event": "usage",
+            "run_id": _current_run_id.get() or "",
+            "user_id": user_id_ctx,
+            "user_name": user_name_ctx,
+            "agent": agent_name,
+            "model": model_name,
+            "query": query[:500],
+            "usage_kind": usage_kind,
+            "accounting_mode": accounting_mode,
+            "input_tokens": max(0, int(input_tokens or 0)),
+            "output_tokens": max(0, int(output_tokens or 0)),
+            "cached_tokens": max(0, int(cached_tokens or 0)),
+            "reasoning_tokens": max(0, int(reasoning_tokens or 0)),
+        },
+    )
 
 
 class _StaticTokenCredential(TokenCredential):
@@ -630,7 +691,7 @@ class _StaticTokenCredential(TokenCredential):
 
 
 class NocAgent(AgentInterface):
-    """A365-hosted MAF orchestrator delegating to 4 persisted Foundry Prompt Agents."""
+    """A365-hosted MAF orchestrator delegating to 5 persisted Foundry Prompt Agents."""
 
     def __init__(self):
         self.logger = logging.getLogger(self.__class__.__name__)
@@ -660,7 +721,7 @@ class NocAgent(AgentInterface):
     # -------------------------------------------------------------------
 
     async def initialize(self) -> None:
-        """Confirm the 4 persisted Prompt Agents exist, then build the orchestrator.
+        """Confirm the 5 persisted Prompt Agents exist, then build the orchestrator.
 
         Connection resolution and toolbox/tool wiring now happen once, at
         provisioning time, in `scripts/create_foundry_agents.py` -- each
@@ -879,19 +940,28 @@ class NocAgent(AgentInterface):
         call carries the right identity for THIS turn/user, never a stale one
         from a previous turn.
 
-        Token governance: all 4 specialists call Foundry directly (never through
+        Token governance: specialists call Foundry directly (never through
         APIM -- routing fabric_iq/work_iq's OAuth-identity-passthrough calls
         through a gateway that substitutes its own managed identity would break
         Agent Service's per-user consent attribution). So this app reports usage
-        to the run ledger directly instead, uniformly for all 4 specialists,
+        to the run ledger directly instead, uniformly for all 5 specialists,
         using the SDK-level `response.usage` this call already gets back --
         the same precall/postcall contract APIM's own policies use, just made
         from Python rather than from policy XML. See docs/SEQUENCE.md.
         """
-        if key == "fabric_iq":
+        if key == "fabric_iq" and not _disable_direct_topology.get():
             try:
                 direct_answer = await self._call_topology_graph(question)
                 if direct_answer:
+                    _emit_usage_event(
+                        agent_name="fabric-graph-direct",
+                        model_name="",
+                        input_tokens=0,
+                        output_tokens=0,
+                        query=question,
+                        usage_kind="direct_graph",
+                        accounting_mode="no_llm",
+                    )
                     return direct_answer
             except Exception as exc:  # noqa: BLE001 -- fall back to the persisted specialist
                 logger.warning("Direct Fabric Graph query failed; falling back to Data Agent: %s", exc)
@@ -900,23 +970,24 @@ class NocAgent(AgentInterface):
         _, needs_user_identity = SPECIALIST_AGENTS[key]
         if needs_user_identity:
             user_token = _current_user_token.get()
-            credential = (
-                _StaticTokenCredential(user_token, time.time() + 300)
-                if user_token
-                else self._service_credential
-            )
+            if not user_token:
+                raise PermissionError(
+                    f"{key} requires the authorized user's delegated identity and consent; retry after sign-in"
+                )
+            credential = _StaticTokenCredential(user_token, _jwt_exp_epoch(user_token))
         else:
             credential = self._service_credential
 
         run_id = _current_run_id.get()
         run_token = _current_run_token.get()
+        governed_run_id = run_id if run_token else None
         next_step = _next_run_step.get()
         step = next_step() if next_step else None
         reservation_id: Optional[str] = None
         max_output_tokens: Optional[int] = None  # None == leave the agent's own default alone
-        if run_id:
+        if governed_run_id:
             decision = await _run_ledger_precall(
-                run_id=run_id,
+                run_id=governed_run_id,
                 agent_name=agent_name.removesuffix("-agent"),
                 step=step or "0",
                 model=agent_name,
@@ -946,8 +1017,8 @@ class NocAgent(AgentInterface):
                 create_kwargs["max_output_tokens"] = max_output_tokens
             response = await asyncio.to_thread(openai_client.responses.create, **create_kwargs)
         except Exception as exc:  # noqa: BLE001 -- degrade this one specialist call, not the whole turn
-            if run_id:
-                await _run_ledger_postcall(run_id, reservation_id, failed=True)
+            if governed_run_id:
+                await _run_ledger_postcall(governed_run_id, reservation_id, failed=True)
             if _extract_run_halt_reason(exc):
                 raise
             logger.error("❌ Specialist '%s' call failed: %s", agent_name, exc, exc_info=True)
@@ -963,31 +1034,20 @@ class NocAgent(AgentInterface):
         cached_tokens = getattr(getattr(usage, "input_tokens_details", None), "cached_tokens", 0) or 0
         reasoning_tokens = getattr(getattr(usage, "output_tokens_details", None), "reasoning_tokens", 0) or 0
         model_name = getattr(response, "model", agent_name) or agent_name
-        user_id_ctx, user_name_ctx = _current_user_ctx.get() or ("unknown", "unknown")
-        # Structured usage_event -> Application Insights customDimensions (via the
-        # configure_azure_monitor logging hook set up above), one row per specialist
-        # call. Query with a KQL join against the Cosmos `pricing` doc for $ cost;
-        # see gateway/app/config-sync-worker/check_usage_detail.py.
-        logger.info(
-            "usage_event",
-            extra={
-                "event": "specialist_usage",
-                "run_id": run_id or "",
-                "user_id": user_id_ctx,
-                "user_name": user_name_ctx,
-                "agent": agent_name,
-                "model": model_name,
-                "query": question[:500],
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-                "cached_tokens": cached_tokens,
-                "reasoning_tokens": reasoning_tokens,
-            },
+        _emit_usage_event(
+            agent_name=agent_name,
+            model_name=model_name,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cached_tokens=cached_tokens,
+            reasoning_tokens=reasoning_tokens,
+            query=question,
+            usage_kind="specialist",
         )
 
-        if run_id:
+        if governed_run_id:
             await _run_ledger_postcall(
-                run_id,
+                governed_run_id,
                 reservation_id,
                 model=model_name,
                 input_tokens=input_tokens,
@@ -997,8 +1057,173 @@ class NocAgent(AgentInterface):
         consent_url = _extract_oauth_consent_url(response)
         if consent_url:
             _pending_consent.set((agent_name, consent_url))
-            return f"({agent_name} requires the user to sign in first; a consent link has been sent.)"
+            return (
+                f"({agent_name} requires the user to sign in first. "
+                f"Open this sign-in link: {consent_url})"
+            )
         return response.output_text or f"({agent_name} returned no answer.)"
+
+    async def investigate_detected_incident(
+        self,
+        incident_id: str,
+        detected_at: str,
+        auth: Authorization,
+        auth_handler_name: Optional[str],
+        context: TurnContext,
+        authorized_user_id: str,
+        *,
+        max_concurrency: int = 3,
+        event_detail: str = "",
+    ) -> dict:
+        """Run all five evidence families once for a subscribed detected incident.
+
+        This path is deliberately separate from model-routed interactive/Cowork
+        orchestration: automatic monitoring has a fixed fan-out and cannot omit
+        an evidence family. Delegated specialists never use the service identity.
+        """
+        from_prop = context.activity.from_property
+        context_user_id = getattr(from_prop, "id", "") if from_prop else ""
+        if not authorized_user_id or context_user_id != authorized_user_id:
+            raise PermissionError("The resumed conversation does not match the subscribed authorized user")
+        user_token = await self._exchange_user_token(
+            auth,
+            auth_handler_name,
+            context,
+            FOUNDRY_USER_TOKEN_SCOPES,
+            user_id=authorized_user_id,
+        )
+        if not user_token:
+            raise PermissionError(
+                "Automatic investigation requires the subscribed user's delegated identity and pre-consent"
+            )
+
+        safe_incident_id = str(incident_id).strip()
+        if not safe_incident_id:
+            raise ValueError("incident_id is required")
+        detail_context = f" Detection detail: {event_detail.strip()}." if event_detail.strip() else ""
+        prompt = (
+            f"Investigate detected incident {safe_incident_id} at {detected_at}.{detail_context} "
+            "Return only evidence relevant to your specialist family, with source provenance. "
+            "Do not send messages or change resources."
+        )
+        semaphore = asyncio.Semaphore(max(1, max_concurrency))
+
+        async def _invoke(key: str) -> tuple[str, dict]:
+            async with semaphore:
+                _pending_consent.set(None)
+                try:
+                    answer = await self._call_specialist(key, prompt)
+                    pending = _pending_consent.get()
+                    if pending:
+                        return key, {
+                            "status": "consent_required",
+                            "agent": SPECIALIST_AGENTS[key][0],
+                            "provenance": key,
+                            "consent_url": pending[1],
+                        }
+                    if "currently unavailable:" in answer:
+                        return key, {
+                            "status": "unavailable",
+                            "agent": SPECIALIST_AGENTS[key][0],
+                            "provenance": key,
+                        }
+                    return key, {
+                        "status": "completed",
+                        "agent": SPECIALIST_AGENTS[key][0],
+                        "provenance": key,
+                        "evidence": answer,
+                    }
+                except PermissionError:
+                    return key, {
+                        "status": "consent_required",
+                        "agent": SPECIALIST_AGENTS[key][0],
+                        "provenance": key,
+                    }
+                except Exception as exc:  # noqa: BLE001 -- report this family, preserve the other four
+                    logger.warning(
+                        "Automatic incident %s specialist %s failed: %s",
+                        safe_incident_id,
+                        key,
+                        type(exc).__name__,
+                    )
+                    return key, {
+                        "status": "unavailable",
+                        "agent": SPECIALIST_AGENTS[key][0],
+                        "provenance": key,
+                    }
+
+        token_handle = _current_user_token.set(user_token)
+        user_handle = _current_user_ctx.set(
+            (authorized_user_id, getattr(from_prop, "name", None) or "unknown")
+        )
+        monitor_run_id = (
+            "monitor-" + hashlib.sha256(f"{detected_at}\n{safe_incident_id}".encode()).hexdigest()[:24]
+        )
+        run_handle = _current_run_id.set(monitor_run_id)
+        deadline_handle = _current_deadline.set(time.monotonic() + AGENT_RUN_TIMEOUT_SECONDS)
+        try:
+            pairs = await asyncio.gather(*(_invoke(key) for key in SPECIALIST_AGENTS))
+        finally:
+            _current_deadline.reset(deadline_handle)
+            _current_run_id.reset(run_handle)
+            _current_user_ctx.reset(user_handle)
+            _current_user_token.reset(token_handle)
+
+        families = dict(pairs)
+        complete = all(item["status"] == "completed" for item in families.values())
+        result = {
+            "incident_id": safe_incident_id,
+            "detected_at": detected_at,
+            "status": "completed" if complete else "retry_required",
+            "families": families,
+            "provenance": [SPECIALIST_AGENTS[key][0] for key in SPECIALIST_AGENTS],
+        }
+        consent = next(
+            (item for item in families.values() if item.get("status") == "consent_required" and item.get("consent_url")),
+            None,
+        )
+        if consent:
+            result["consent_url"] = consent["consent_url"]
+            result["consent_agent"] = consent["agent"]
+        if complete:
+            synthesis_run_handle = _current_run_id.set(monitor_run_id)
+            synthesis_user_handle = _current_user_ctx.set(
+                (authorized_user_id, getattr(from_prop, "name", None) or "unknown")
+            )
+            try:
+                result["response"] = await self._synthesize_automatic_investigation(result)
+            finally:
+                _current_user_ctx.reset(synthesis_user_handle)
+                _current_run_id.reset(synthesis_run_handle)
+        return result
+
+    async def _synthesize_automatic_investigation(self, investigation: dict) -> str:
+        """Perform the final synthesis with a tool-free model instance."""
+        synthesis_agent = Agent(
+            client=self._chat_client,
+            name="NocAutomaticIncidentSynthesis",
+            instructions=(
+                "Synthesize the supplied five-family NOC investigation into a concise Teams update. "
+                "Cite each factual statement by specialist agent name. Do not call tools, send messages, "
+                "or invent missing evidence."
+            ),
+            tools=[],
+            default_options={"store": False},
+        )
+        synthesis_input = json.dumps(investigation, sort_keys=True)
+        result = await synthesis_agent.run([Message("user", [synthesis_input])])
+        usage = getattr(result, "usage_details", None) or {}
+        _emit_usage_event(
+            agent_name="noc-automatic-synthesis",
+            model_name=MODEL_DEPLOYMENT_NAME,
+            input_tokens=usage.get("input_token_count") or 0,
+            output_tokens=usage.get("output_token_count") or 0,
+            cached_tokens=usage.get("cached_token_count") or 0,
+            reasoning_tokens=usage.get("reasoning_token_count") or 0,
+            query=synthesis_input,
+            usage_kind="synthesis",
+        )
+        return result.text or "All five specialist families completed, but synthesis returned no text."
 
     # -------------------------------------------------------------------
     # MESSAGE PROCESSING
@@ -1040,7 +1265,10 @@ class NocAgent(AgentInterface):
             _current_user_token.set(foundry_user_token)
             _pending_consent.set(None)
             _current_run_token.set(run_token)
-            _current_run_id.set(run_id if run_token else None)
+            # Correlation is independent of governance availability: always stamp
+            # the deterministic Teams run ID, even when the optional ledger
+            # runtime is absent. Ledger calls remain gated by run_token.
+            _current_run_id.set(run_id)
             _next_run_step.set(_next_step if run_token else None)
             _current_user_ctx.set((user_id, display_name))
 
@@ -1066,8 +1294,18 @@ class NocAgent(AgentInterface):
                 if run_token:
                     await _run_ledger_postcall(run_id, reservation_id, failed=True)
                 raise
+            usage = getattr(result, "usage_details", None) or {}
+            _emit_usage_event(
+                agent_name=RUN_LEDGER_AGENT_NAME,
+                model_name=MODEL_DEPLOYMENT_NAME,
+                input_tokens=usage.get("input_token_count") or 0,
+                output_tokens=usage.get("output_token_count") or 0,
+                cached_tokens=usage.get("cached_token_count") or 0,
+                reasoning_tokens=usage.get("reasoning_token_count") or 0,
+                query=message,
+                usage_kind="orchestrator",
+            )
             if run_token:
-                usage = getattr(result, "usage_details", None) or {}
                 await _run_ledger_postcall(
                     run_id,
                     reservation_id,
@@ -1075,12 +1313,13 @@ class NocAgent(AgentInterface):
                     input_tokens=usage.get("input_token_count") or 0,
                     output_tokens=usage.get("output_token_count") or 0,
                 )
-            return result
+            return result, _pending_consent.get()
 
         run_task = asyncio.ensure_future(_run_turn())
         try:
-            response = await asyncio.wait_for(asyncio.shield(run_task), timeout=AGENT_RUN_TIMEOUT_SECONDS)
-            pending = _pending_consent.get()
+            response, pending = await asyncio.wait_for(
+                asyncio.shield(run_task), timeout=AGENT_RUN_TIMEOUT_SECONDS
+            )
             if pending:
                 agent_name, consent_url = pending
                 # Send the sign-in Adaptive Card directly (context is already

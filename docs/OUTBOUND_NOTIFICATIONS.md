@@ -19,6 +19,18 @@
 | Does the original sender see the broadcast, not just the static distribution list? | **Yes.** `handle_email_message()` now CC's the inbound email's sender on every persona email sent (see §6) — confirmed via live test. |
 | Has this actually been tested against a live tenant, end to end? | **Yes — see "Live E2E Test Results" below.** Both trigger paths, all 4 personas, real Graph `sendMail` calls, real inbox verification. 5 real bugs were found and fixed in the process (details below). |
 
+### App Service monitor delivery is a separate Teams-only path
+
+The optional `IncidentEvents` monitor does not replace or alter
+`POST /api/incidents/notify` or the tagged-email/persona flow below. It adds no
+public callback endpoint and sends no persona email. After an operator uses
+`/monitor subscribe`, a detected event resumes that exact durable conversation,
+runs all five specialist families with the subscribed user's delegated
+identity, and posts one enriched Teams response only when every family
+completes. Consent/partial failures retry without sending. The monitor is
+disabled by default and is at-least-once, so a crash between Teams delivery
+and cursor persistence can produce a duplicate.
+
 ## 1. Is there a Microsoft sample for this pattern?
 
 No. Two things were checked and ruled out:

@@ -55,6 +55,13 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   }
 }
 
+resource agentStateContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
+  name: '${storageAccount.name}/default/agent-state'
+  properties: {
+    publicAccess: 'None'
+  }
+}
+
 // Get reference to the AI Services account and project to access their managed identities
 resource aiAccount 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' existing = if (!empty(aiServicesAccountName) && !empty(aiProjectName)) {
   name: aiServicesAccountName
@@ -109,5 +116,6 @@ module storageConnection '../ai/connection.bicep' = if (!empty(aiServicesAccount
 
 output storageAccountName string = storageAccount.name
 output storageAccountId string = storageAccount.id
+output agentStateContainerName string = 'agent-state'
 output storageAccountPrincipalId string = storageAccount.identity.principalId
 output storageConnectionName string = storageConnection!.outputs.connectionName

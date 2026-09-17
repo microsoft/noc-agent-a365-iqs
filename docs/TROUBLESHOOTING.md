@@ -1,7 +1,53 @@
 # Troubleshooting
 
+## September 16, 2026 partner-showcase deployment
+
+- App Service initially returned Blob `AuthorizationFailure`: Azure governance
+  disabled Storage public access after provisioning. Fixed with regional App
+  Service VNet integration, Blob Private Endpoint, and private DNS. Fabric was
+  intentionally left public for the PoC.
+- The Foundry IQ Gate A path is live and proven end to end:
+  persisted `noc-knowledge-agent` v3 -> APIM -> versioned single-tool Toolbox
+  -> `kb-mcp-connection` -> Search knowledge-base MCP.
+- APIM required both **Azure AI Developer** and **Cognitive Services User** at
+  project scope; the first role alone produced a backend 403.
+- Web IQ is configured through the `web-iq-connection` CustomKeys connection.
+  A live `noc-threatintel-agent` smoke test returned a grounded public Cisco
+  advisory; the secret itself is never committed or printed in documentation.
+- Work IQ correctly returns an OAuth consent request for the calling user.
+  User interaction is required; this is not an unattended service credential.
+- Direct Fabric Graph and RTI MCP queries succeed. The nested topology Data
+  Agent response remains provider-limited and must not be represented as fixed.
+- After the final Teams-user RBAC deployment, `/api/health` was reverified with
+  `agent_initialized: true`, `durable_storage: available`, and no initialization
+  error. The monitor remains deliberately disabled and unsubscribed; no alert
+  has been sent.
+- The current Agent 365 package is `agent/manifest/manifest.zip`, version
+  `1.1.4`. If Admin Center says a newer version is required, that exact version
+  is already installed; backend/App Service changes do not require another
+  package upload unless the manifest itself changes. Completing downstream
+  consent and subscribing the destination conversation remain acceptance gates.
+
+
 Known gotchas surfaced while researching and building this solution, recorded
 here so `fix-loop` doesn't have to rediscover them.
+
+## Detected-incident monitor
+
+| Symptom | Cause | Resolution |
+|---|---|---|
+| `hi` works but no consent card appears | A greeting exercises only Teams -> Bot -> App Service; no delegated IQ connection was invoked | Send the focused Work IQ and RTI IQ prompts in `docs/DEPLOYMENT.md`. Open each **Sign in to ...** card immediately, finish consent as the same Teams user, and retry the same prompt. If the card is not rendered, update the App Service first: consent responses can be returned as SDK dictionaries or typed objects, and the bot now includes the raw single-use sign-in URL as a text fallback. Focused link/conduit Fabric IQ prompts use the managed-identity direct Graph template and therefore do not need a user-consent card. |
+| Focused Fabric IQ link/conduit prompt returns `access token is invalid` | The request fell through to the preview nested Foundry topology agent -> Fabric Data Agent -> GraphModel path instead of the proven direct Graph template. In the September 17 deployment, unrelated Foundry IQ APIM proxy settings incorrectly disabled that direct Fabric path. | The direct Graph route no longer depends on Foundry IQ Toolbox/proxy settings. Supported prompts containing a link ID plus `conduit`, `blast radius`, `depends`, or `affected` use direct Graph. Automatic replay also carries the detected-event detail (including the link ID) into the topology specialist. The nested provider token boundary remains unresolved for open-ended topology questions. |
+| Work IQ says “a consent link has been sent” but no card/link appears | `_pending_consent` was set inside the isolated `agent.run()` asyncio task, then read from the parent task. Python context-variable updates do not propagate back from a child task, so the parent saw no pending consent and sent only the orchestrator's placeholder text. | `_run_turn()` now returns both the model response and its task-local pending-consent tuple. The parent sends the Adaptive Card from that returned value. Retry the Work IQ prompt after the corrected App Service deployment; open the **Sign in to noc-comms-agent** button immediately. |
+| Admin Center rejects `manifest.zip` with “Must upload a newer version” | Manifest version `1.1.4` is already installed | Keep using the installed app for backend-only changes. Upload again only after a real manifest change and a version increment (for example `1.1.5`). |
+| Startup says required monitor settings are missing | `INCIDENT_MONITOR_ENABLED=true` without KQL URI/database, storage account, or state container | Set `FABRIC_KQL_QUERY_URI`, `FABRIC_KQL_DATABASE_NAME`, `AZURE_STORAGE_ACCOUNT_NAME`, and `AGENT_STATE_CONTAINER_NAME`, or return `INCIDENT_MONITOR_ENABLED=false`. |
+| Health reports enabled but not leader | Another App Service instance owns the blob lease, storage RBAC has not propagated, or a restart tried to recreate the already-leased leader blob and received `LeaseIdMissing` | One leader is expected. Lease acquisition checks whether `monitor/leader.lock` exists before creating it, and standby instances now retry acquisition every poll interval instead of exiting permanently during a deployment overlap. Check another instance first; otherwise verify Storage Blob Data Contributor access. |
+| Events are not polled | No durable subscription exists | In the intended Teams conversation, pre-consent all delegated specialists and send `/monitor subscribe`; verify `monitor_subscribed` in `/api/health`. |
+| Monitor stops with `Cannot compare values of types string and string` | KQL does not support relational `>` comparison between string incident IDs in the compound cursor filter | Use `strcmp(IncidentId, cursorId) > 0` for the same-timestamp tie-breaker. The monitor retains timestamp ordering and Python-side cursor deduplication. |
+| An incident retries without a Teams post | The proactive continuation omitted the Agent 365 OAuth handler, so its synthetic turn could not restore the subscribed user's durable sign-in state; `_exchange_user_token` returned empty even after successful interactive consent | Pass the configured auth handler through `continue_conversation(..., token_handlers=[auth_handler_name])`. The SDK verifies/restores the OAuth connection before invoking the monitor callback. If an older event already exhausted three attempts, replay a fresh incident after deploying the fix. Partial automatic results remain intentionally unsent. |
+| The same enriched response appears twice | At-least-once boundary: Teams accepted the send before the cursor write completed | Expected failure behavior. Deduplicate operationally by the safe incident ID; do not manually move the cursor unless the event is verified. |
+| KQL polling gets 403 while blob state works | Storage RBAC is ARM-managed, but Fabric workspace/Eventhouse query access is separate | Grant `AGENT_HOST_PRINCIPAL_ID` read/query access in the Fabric workspace/Eventhouse. |
+| A poison event stops retrying | It reached `INCIDENT_MONITOR_MAX_ATTEMPTS` and was durably dead-lettered | Inspect safe IDs/error types in `monitor/state.json`; incident content and tokens are not logged. Correct the underlying access/service issue before replaying through an approved operational process. |
 
 ## Cowork MCP works, but Fabric Data Agent graph execution regressed
 
@@ -317,6 +363,25 @@ Fabric Eventhouse. Outcome: **B2-c — not attachable.**
 | Throwaway toolbox wrapping `fabric-iq-connection` answered `tools/list` directly (200, with an `ai.azure.com` bearer token) | The toolbox's own MCP endpoint is fine in isolation | n/a — confirms the toolbox itself isn't broken |
 | A throwaway Prompt Agent whose `MCPTool.server_url` pointed at that toolbox endpoint failed every call with `tool_user_error` → inner `401 PermissionDenied` (both under the app's default credential and under `_StaticTokenCredential` OBO injection) | `PromptAgentDefinition` only supports `tools: list[Tool]` — a Prompt Agent's own `MCPTool` cannot authenticate to a Toolbox's MCP endpoint at all, so OBO passthrough through that hop was never reachable to test | **Decision: skip the toolbox layer for `noc-incident-agent`.** It gets a direct `MCPTool(server_url=FABRIC_RTI_MCP_URL, project_connection_id=<fabric-rti-connection>)`, identical in shape to the existing `fabric_iq`/`work_iq` specialists. `scripts/create_rti_toolbox.py` (if written) stays in the repo unused/unwired, in case a future SDK version adds toolbox support to `PromptAgentDefinition`. |
 
+### Gate A Foundry IQ APIM/Toolbox re-test (not yet live)
+
+The earlier direct Prompt Agent -> Toolbox attempt above failed because the
+Prompt Agent could not authenticate to the Toolbox endpoint. The minimum Gate
+A spike deliberately tests a different chain:
+`noc-knowledge-agent -> CustomKeys RemoteTool connection -> dedicated,
+subscription-protected APIM MCP route -> APIM managed identity
+(https://ai.azure.com) -> one-tool Toolbox -> kb-mcp-connection`. It is
+disabled when `foundryIqToolboxBackendUrl` and the two connection/URL
+`FOUNDRY_IQ_PROXY_*` values are empty.
+
+Local compilation/self-checks prove only configuration shape. A 401/403 at the
+Toolbox hop remains a failed gate: confirm the APIM principal has project-scope
+access and capture request/correlation IDs without logging authorization,
+`Mcp-Session-Id`, protocol headers, or bodies. Do not work around failure by
+placing the proxy connection inside the Toolbox or by applying the inference/
+Cowork policies. This Foundry IQ service-mode test cannot prove unattended
+Work IQ, whose delegated OAuth consent limitation remains unchanged.
+
 
 
 See `docs/OUTBOUND_NOTIFICATIONS.md`'s "Live E2E test results" section for
@@ -381,7 +446,21 @@ the prior session's primer.
 | A plain greeting ("status check") produces **no** `usage_event` row | `usage_event` is only logged inside `agent.py`'s `_call_specialist()` — i.e. only when the orchestrator actually routes to one of the 4 specialist agents. A message the orchestrator can answer directly with no tool call legitimately logs nothing. Not a bug; ask something that needs a specialist (runbook/topology/advisory/comms lookup) to generate a row. |
 | `check_usage.py` shows `No usage rows found` even after a real specialist-routed turn | **By design, not a bug.** `check_usage.py`'s `_USAGE_KQL` reads `AppMetrics` rows named `"Prompt Tokens"/"Completion Tokens"`, which APIM's `azure-openai-token-limit` policy only emits for traffic that actually flows through the `openai-gateway`/`foundry-gateway` APIs. Per `gateway/PORTING_NOTES.md`'s "final mixed-routing decision", this app's own agent/model traffic **always bypasses APIM** and calls Foundry directly — those two APIs exist for *other* direct AOAI/Foundry callers, not this app's hot path. `check_usage.py` will correctly show `$0`/nothing for this app forever; that's expected. |
 | `check_usage_detail.py` is the correct tool for this app | It reads the `usage_event` AppTraces rows agent.py emits per specialist call — confirmed live with 4 real requests across all 4 specialists (`noc-knowledge-agent`, `noc-comms-agent`, `noc-threatintel-agent`), real token counts (e.g. 17307 in / 3769 out on one `gpt-5.4` call). |
-| `cost_usd` still shows `0.00000` for these live rows | Same pre-existing, already-documented Cosmos private-endpoint restriction above — pricing lookup 403s from a laptop's public IP. Usage/token data itself is fully verified end-to-end; only the local `$` rendering needs a VNet-internal caller (e.g. exec into `ca-adminui-aigw-<env>`). |
+| `cost_usd` still shows `0.00000` for these live rows | The original report depended only on the private Cosmos pricing document. `check_usage_detail.py` now falls back to the Azure Retail Prices API, so a laptop can render estimated cost without weakening Cosmos networking. It labels actual-token and estimate-only totals separately and records direct Graph as `no_llm`/zero cost. |
+
+On September 17, 2026, the report reconciled the delivered proactive run
+`monitor-65cf0d6d7e561a7076c16cc5`: 10 billable specialist rows across retries,
+154,662 actual tokens, and an estimated model cost of **$0.50403** using East
+US 2 Retail Prices. This intentionally includes retry calls because they
+consumed model tokens. The historical run predates orchestrator/synthesis
+classification, so those rows are not retroactively invented.
+
+The resource-group teardown removed the separate gateway TokenOps runtime
+(APIM run-ledger API, Redis, Cosmos, worker, and Admin UI). Current reporting
+therefore proves usage/cost accounting independently of that absent runtime;
+it must not be described as proof that run-scoped precall enforcement is
+currently deployed. Reprovisioning the full gateway stack is a separate,
+billable infrastructure deployment.
 
 ## noc-incident-agent (RTI) live verification — partial, pending a real Teams turn
 
@@ -513,7 +592,8 @@ found and fixed, plus one non-ARM consolidation:
 |---|---|---|
 | Cosmos data-plane RBAC (`Cosmos DB Built-in Data Contributor` for worker/admin-ui) had to be granted with a manual `az cosmosdb sql role assignment create` after every fresh deploy | `gateway/infra/core/config/cosmos.bicep` already correctly implemented `readerPrincipals`/`writerPrincipals`/`configWriterPrincipals` as `sqlRoleAssignments` children — but `gateway/infra/main.bicep` never passed the worker/admin-ui managed identity principal ids into those params. Wiring bug, not a missing capability. | `main.bicep` now `concat()`s `identities.outputs.workerPrincipalId` into `writerPrincipals` and `identities.outputs.adminUiPrincipalId` into `configWriterPrincipals` automatically — safe unconditionally, since `identities.bicep` creates all 3 UAMIs regardless of whether the corresponding Container App/Job is enabled. |
 | Foundry project RBAC for Teams users (§9c: `Azure AI Developer`, `Foundry Project Runtime User`, `Cognitive Services OpenAI User`, `Cognitive Services User`) had to be granted with 4 manual `az role assignment create` calls per environment, on top of the one role (`Foundry Agent Consumer`) `rbac.bicep` already declared | `infra/core/ai/rbac.bicep` only ever declared `foundryAgentConsumerRole` for `teamsUsersPrincipalId` — the other 4 roles documented as required in DEPLOYMENT.md §9c were never added to the Bicep module | Added 4 more conditional (`!empty(teamsUsersPrincipalId)`) role-assignment resources to `rbac.bicep`, all scoped to `aiAccount::project` exactly like the pre-existing one. `az bicep build` compiles clean on both files. |
-| Fabric tenant consent (`DataAgent.Read.All`/`Execute.All`), Fabric workspace role assignment for the agent-user, Graph tenant consent (Work IQ's 7 scopes + optional `Mail.Send`), and Fabric workspace Viewer for the Teams-users group were each a separate hand-typed `az rest`/curl command across DEPLOYMENT.md §4b/§4d/§6a/§6b | None of these are ARM resource types (`oauth2PermissionGrants` and Fabric workspace `roleAssignments` are both Graph/Fabric-REST-only) — Bicep cannot express them. This is a genuine ceiling, not an oversight. | New `scripts/grant_agent_identity_access.py` consolidates all 4 into one idempotent script call: checks existing `oauth2PermissionGrants` and merges scopes (union) instead of clobbering on re-run, checks existing Fabric workspace role assignments before granting. DEPLOYMENT.md §4b/§4d/§6a/§6b/§9c rewritten to point at this script and the now-automatic Bicep roles instead of raw commands. The one irreducible manual step: `AGENT_IDENTITY_OBJECT_ID`/`AGENT_USER_OBJECT_ID` still can't be resolved before `a365 setup all` + a first live Teams turn have run (no pre-deployment lookup path found), so this script is necessarily a post-first-message step, not a pure `azd up`-time one. |
+| Fabric IQ prompt returns `access token is invalid` | The live persisted topology specialist reaches the preview Fabric Data Agent/GraphModel connector, whose nested token exchange remains provider-limited. This is not evidence that the Teams user skipped consent; the same failure was reproduced with a valid admin Fabric token and direct Graph queries succeed. | Do not keep broadening permissions or retrying indefinitely. Record the Teams timestamp/correlation if escalating, use RTI IQ for Eventhouse evidence, and use the deterministic direct-Graph template for the supported link/conduit showcase path. |
+| Fabric tenant consent (`DataAgent.Read.All`/`Execute.All`), Fabric works pace role assignment for the agent-user, Graph tenant consent (Work IQ's 7 scopes + optional `Mail.Send`), and Fabric workspace Viewer for the Teams-users group were each a separate hand-typed `az rest`/curl command across DEPLOYMENT.md §4b/§4d/§6a/§6b | None of these are ARM resource types (`oauth2PermissionGrants` and Fabric workspace `roleAssignments` are both Graph/Fabric-REST-only) — Bicep cannot express them. This is a genuine ceiling, not an oversight. | New `scripts/grant_agent_identity_access.py` consolidates all 4 into one idempotent script call: checks existing `oauth2PermissionGrants` and merges scopes (union) instead of clobbering on re-run, checks existing Fabric workspace role assignments before granting. DEPLOYMENT.md §4b/§4d/§6a/§6b/§9c rewritten to point at this script and the now-automatic Bicep roles instead of raw commands. The one irreducible manual step: `AGENT_IDENTITY_OBJECT_ID`/`AGENT_USER_OBJECT_ID` still can't be resolved before `a365 setup all` + a first live Teams turn have run (no pre-deployment lookup path found), so this script is necessarily a post-first-message step, not a pure `azd up`-time one. |
 
 ## Cowork package validation and first install (2026-09-07)
 

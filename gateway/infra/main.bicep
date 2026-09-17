@@ -213,6 +213,12 @@ param mcpFabricGraphModelId string = ''
 @description('Foundry project ARM resource ID used for MCP host managed-identity RBAC.')
 param mcpFoundryProjectResourceId string = ''
 
+@description('Exact versioned Foundry IQ Toolbox MCP URL. Empty disables the Gate A APIM route.')
+param foundryIqToolboxBackendUrl string = ''
+
+@description('ARM resource ID of the project hosting the Gate A Toolbox. Empty skips APIM project RBAC; document/grant it before live use.')
+param foundryIqToolboxProjectResourceId string = ''
+
 @description('Azure AI Search ARM resource ID used for MCP host Foundry IQ RBAC.')
 param mcpSearchServiceResourceId string = ''
 
@@ -287,6 +293,7 @@ var resourceToken = uniqueString(subscription().id, resourceGroupName, location)
 var apimResourceName = toLower(take('apim${replace(nameSuffix, '-', '')}${resourceToken}', 50))
 var apimResourceId = resourceId(subscription().subscriptionId, resourceGroupName, 'Microsoft.ApiManagement/service', apimResourceName)
 var mcpFoundryProjectParts = split(mcpFoundryProjectResourceId, '/')
+var foundryIqToolboxProjectParts = split(foundryIqToolboxProjectResourceId, '/')
 var mcpSearchServiceParts = split(mcpSearchServiceResourceId, '/')
 var openAiAliasNames = [for deployment in openaiDeployments: deployment.name]
 var foundryAliasNames = [for deployment in foundryDeployments: deployment.name]
@@ -524,6 +531,16 @@ module mcpSearchRbac 'core/ai/mcp-search-rbac.bicep' = if (!empty(mcpHostImage))
   }
 }
 
+module foundryIqApimRbac 'core/ai/mcp-host-rbac.bicep' = if (!empty(foundryIqToolboxBackendUrl) && !empty(foundryIqToolboxProjectResourceId)) {
+  name: 'foundry-iq-apim-rbac'
+  scope: resourceGroup(foundryIqToolboxProjectParts[2], foundryIqToolboxProjectParts[4])
+  params: {
+    aiServicesAccountName: foundryIqToolboxProjectParts[8]
+    aiProjectName: foundryIqToolboxProjectParts[10]
+    principalId: apim.outputs.identityPrincipalId
+  }
+}
+
 module apim 'core/apim/apim.bicep' = {
   name: 'apim'
   scope: rg
@@ -550,6 +567,7 @@ module apim 'core/apim/apim.bicep' = {
     runLedgerBaseUrl: runLedger.outputs.appFqdn
     adminUiBaseUrl: containerApps.outputs.adminUiFqdn
     mcpHostBaseUrl: mcpHost.outputs.appFqdn
+    foundryIqToolboxBackendUrl: foundryIqToolboxBackendUrl
     runTokensPerMinute: runTokensPerMinute
     runTokenQuota: runTokenQuota
     runTokenQuotaPeriod: runTokenQuotaPeriod
@@ -633,6 +651,8 @@ output containerAppsEnvironmentId string = containerApps.outputs.environmentId
 output configSyncJobName string = containerApps.outputs.jobName
 output adminUiFqdn string = containerApps.outputs.adminUiFqdn
 output adminUiGatewayUrl string = apim.outputs.adminUiGatewayUrl
+output FOUNDRY_IQ_PROXY_MCP_URL string = apim.outputs.foundryIqMcpGatewayUrl
+output FOUNDRY_IQ_PROXY_APIM_SUBSCRIPTION_KEY_SECRET_URI string = apim.outputs.foundryIqMcpSubscriptionKeySecretUri
 output runLedgerFqdn string = runLedger.outputs.appFqdn
 output mcpHostFqdn string = mcpHost.outputs.appFqdn
 output mcpHostIdentityClientId string = identities.outputs.mcpHostClientId

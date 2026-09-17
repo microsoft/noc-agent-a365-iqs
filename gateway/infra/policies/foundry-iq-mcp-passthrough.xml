@@ -1,0 +1,16 @@
+<policies>
+  <inbound>
+    <base />
+    <authentication-managed-identity resource="https://ai.azure.com" />
+    <set-backend-service base-url="{{FOUNDRY_IQ_TOOLBOX_BACKEND_URL}}" />
+  </inbound>
+  <backend>
+    <forward-request buffer-request-body="false" buffer-response="false" />
+  </backend>
+  <outbound>
+    <base />
+  </outbound>
+  <on-error>
+    <base />
+  </on-error>
+</policies>

@@ -55,7 +55,15 @@ def _build_agent():
 
 async def _run():
     instance = _build_agent()
-    with patch.dict(os.environ, {"FABRIC_WORKSPACE_ID": "workspace-1", "FABRIC_GRAPH_MODEL_ID": "graph-1"}):
+    with patch.dict(
+        os.environ,
+        {
+            "FABRIC_WORKSPACE_ID": "workspace-1",
+            "FABRIC_GRAPH_MODEL_ID": "graph-1",
+            "FOUNDRY_IQ_TOOLBOX_NAME": "noc-foundry-iq-gate-a",
+            "FOUNDRY_IQ_PROXY_CONNECTION_NAME": "foundry-iq-apim-proxy",
+        },
+    ):
         _Client.responses = [
             [{"LinkId": "LINK-SYD-MEL-FIBRE-01", "OriginRouter": "CORE-SYD-01", "TerminatingRouter": "CORE-MEL-01", "ConduitId": "CONDUIT-SYD-MEL-INLAND"}],
             [{"LinkId": "LINK-SYD-MEL-FIBRE-01", "ConduitId": "CONDUIT-SYD-MEL-INLAND"}, {"LinkId": "LINK-SYD-MEL-FIBRE-02", "ConduitId": "CONDUIT-SYD-MEL-INLAND"}],
@@ -69,6 +77,7 @@ async def _run():
 
     assert len(_Client.calls) == 3
     assert all("/workspaces/workspace-1/GraphModels/graph-1/executeQuery" in call[0] for call in _Client.calls)
+    assert all(call[1]["Authorization"] == "Bearer fabric-token" for call in _Client.calls)
     assert all("LINK-SYD-MEL-FIBRE-01" in call[2] for call in _Client.calls)
     assert "CORE-SYD-01" in answer and "CORE-MEL-01" in answer
     assert "LINK-SYD-MEL-FIBRE-02" in answer

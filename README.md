@@ -74,6 +74,14 @@ OBO/`UserEntraToken`). Full narrative and all steps are in
 [`docs/SEQUENCE.md`](docs/SEQUENCE.md) §3; PNG fallback at
 [`docs/images/tokenops-sequence.png`](docs/images/tokenops-sequence.png).
 
+For per-run reconciliation, first discover the `teams-...` or `monitor-...`
+run ID from App Insights, then run
+`gateway\app\config-sync-worker\check_usage_detail.py --workspace-id <guid> --run-id <id>`.
+It reports per-step input/output/cached/reasoning tokens, actual model cost,
+estimate-only usage, and zero-LLM direct Graph execution separately, using
+Cosmos pricing when reachable or Azure Retail Prices as a fallback. See the
+[numbered procedure](docs/DEPLOYMENT.md#complete-token-and-cost-breakdown-for-one-teams-turn-or-monitor-incident).
+
 ## IQ auth-type matrix (read this before wiring connections)
 
 | IQ surface | Auth type | Why |
@@ -97,6 +105,31 @@ azd up
 Full steps (Foundry IQ KB build, Fabric ontology + Data Agent, Web/Work IQ
 connections, A365 publish, teardown) are in
 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
+
+## Live Teams acceptance and four-IQ prompts
+
+A greeting such as `hi` verifies Teams -> Agent 365/Bot -> App Service only.
+Before enabling the proactive monitor, exercise the delegated Fabric/Work/RTI
+connections in the same Teams chat and complete every **Sign in to ...** card.
+Then send `/monitor subscribe` and verify `/api/health` reports
+`monitor_subscribed: true`. See
+[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md#optional-detected-incident-monitor-disabled-by-default)
+for the safe enablement and anomaly-replay commands.
+
+Use these four partner-demo prompts:
+
+1. **Foundry IQ — runbooks and history**
+   > Using Foundry IQ only, identify the fibre-cut runbook and historical tickets relevant to LINK-SYD-MEL-FIBRE-01. Separate documented procedure from historical narrative and cite each source.
+2. **Fabric IQ — topology plus RTI evidence**
+   > Using Fabric IQ and RTI IQ, determine the endpoints, conduit, shared-conduit links, directly exposed services and SLAs for LINK-SYD-MEL-FIBRE-01, then give the exact IncidentEvents timeline and optical evidence for INC-2025-08-14-0042. Distinguish graph exposure from measured incident evidence.
+3. **Web IQ — public intelligence**
+   > Using Web IQ only, find one recent public vendor advisory relevant to telecom network operations. Give the title, vendor, publication date, URL, and operational relevance.
+4. **Work IQ — Microsoft 365 context**
+   > Using Work IQ only, find the current on-call or incident-bridge context available in my Teams and Outlook, and draft a concise NOC status update. Do not invent information that is not present.
+
+Foundry IQ and Web IQ use service/key authentication. Fabric IQ, RTI IQ, and
+Work IQ are user-scoped and may present separate short-lived consent cards;
+open each card immediately and retry that prompt after consent.
 
 ## Repository layout
 

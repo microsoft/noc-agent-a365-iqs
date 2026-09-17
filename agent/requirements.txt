@@ -33,6 +33,8 @@ microsoft-agents-a365-notifications==1.0.0
 
 # Azure SDK / auth
 azure-identity>=1.25.3
+azure-kusto-data>=5.0.5
+azure-storage-blob>=12.27.0
 httpx>=0.28.1
 PyJWT>=2.8.0
 

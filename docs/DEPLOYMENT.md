@@ -66,6 +66,103 @@ This creates, in a new resource group (`rg-<AZURE_ENV_NAME>` by default):
 
 Capture the outputs — `azd env get-values` prints them all, including
 `AZURE_AI_PROJECT_ENDPOINT`, the Search endpoint, and the agent host name.
+It also prints `AGENT_HOST_PRINCIPAL_ID`, which is the identity to grant
+Fabric workspace/Eventhouse read access if that principal ID was not already
+recorded for the environment.
+
+### Current partner-showcase deployment (September 16, 2026)
+
+The non-destructive base deployment currently uses resource group
+`rg-noc-iq-demo`: Foundry is in East US 2, Basic Search is in Sweden Central,
+and the B1 Linux App Service is in West US 3. The regional split was required
+because Search capacity was unavailable in East US 2/West US 3 and the East US
+2 B1 App Service quota was zero. The host is
+`https://app-n2tjinbhnbln6.azurewebsites.net`; its managed identity is
+`c010ca2f-55c5-486e-a6d6-54747b3d2e72`. Governance disabled public Storage
+access, so the host uses VNet integration plus a Blob Private Endpoint; Fabric
+remains public for this PoC. The dedicated F2 capacity `fabricn2tjinbhnbln6`
+is active in West US 3 and workspace `NOC-Topology-adcea30f` is assigned to it.
+The public BasicV2 APIM proof endpoint is
+`https://apim-noc-n2tjinbhnbln6.azure-api.net/specialists/foundry-iq/mcp`.
+The monitor remains disabled and no Teams notification has been sent. Do not
+treat these values as portable to a new environment.
+
+### Optional detected-incident monitor (disabled by default)
+
+The App Service monitor is provisioned **off** and must stay off until its
+destination and delegated access are confirmed:
+
+1. Run `python scripts/create_eventhouse.py`. In addition to its existing
+   Eventhouse/table behavior, it persists `FABRIC_KQL_QUERY_URI` and
+   `FABRIC_KQL_DATABASE_NAME` to the root `.env`. Existing table data is
+   preserved by default; set `FABRIC_EVENTHOUSE_RESEED=true` only when an
+   intentional full demo-data replacement is required.
+2. Import those values into the azd environment, then re-run provisioning so
+   the non-secret settings reach App Service:
+   ```bash
+   set -a; source .env; set +a
+   azd env set FABRIC_KQL_QUERY_URI "$FABRIC_KQL_QUERY_URI"
+   azd env set FABRIC_KQL_DATABASE_NAME "$FABRIC_KQL_DATABASE_NAME"
+   azd provision
+   ```
+   Bicep
+   creates the private `agent-state` container and grants the App Service
+   identity **Storage Blob Data Contributor** on its storage account.
+3. In Fabric, grant `AGENT_HOST_PRINCIPAL_ID` query access to the workspace
+   and Eventhouse. Fabric item/workspace authorization is not ARM-managed.
+4. In the intended Teams conversation, pre-consent every delegated surface.
+   Send each prompt separately; when the agent posts a **Sign in to ...** card,
+   open it immediately, sign in as the same Teams user, accept the requested
+   consent, and retry the same prompt until it returns evidence:
+   - Fabric topology verification: `Using Fabric IQ only, list the endpoints and conduit for LINK-SYD-MEL-FIBRE-01.` This supported link template uses the App Service managed identity and direct Graph REST API, so success is expected without a consent card.
+   - Work IQ consent: `Using Work IQ only, find the current on-call or incident-bridge context in my Teams and Outlook.`
+   - Fabric RTI consent: `Using RTI IQ only, show the IncidentEvents timeline for INC-2025-08-14-0042.`
+
+   The initial `hi` response proves the Teams/Bot/App Service path, but does not
+   pre-consent the downstream user-scoped Work IQ and RTI connections. Foundry
+   IQ and Web IQ use service/key authentication; supported focused Fabric link
+   queries use the host managed identity. Those paths do not show user-consent
+   cards.
+5. After those prompts succeed, send `/monitor subscribe` in that exact Teams
+   chat. The bot must reply that the conversation is subscribed. This stores
+   both the durable conversation reference and the subscribing user identity.
+6. Confirm health before enabling:
+   ```powershell
+   Invoke-RestMethod https://app-n2tjinbhnbln6.azurewebsites.net/api/health |
+     ConvertTo-Json -Depth 5
+   ```
+   Require `agent_initialized=true`, `durable_storage=available`, and
+   `monitor_subscribed=true` while `monitor.enabled` is still `false`.
+7. Enable only the monitor setting without replacing the other Agent 365 app
+   settings, restart, and recheck health:
+   ```powershell
+   az webapp config appsettings set `
+     --subscription c8a35425-69fe-4a90-bf45-4475c0adb74a `
+     --resource-group rg-noc-iq-demo `
+     --name app-n2tjinbhnbln6 `
+     --settings INCIDENT_MONITOR_ENABLED=true `
+     --output none
+   az webapp restart `
+     --subscription c8a35425-69fe-4a90-bf45-4475c0adb74a `
+     --resource-group rg-noc-iq-demo `
+     --name app-n2tjinbhnbln6
+   ```
+   Require `monitor.enabled=true`, `monitor.running=true`, and normally
+   `monitor.leader=true` after startup.
+8. Preview, then append a unique current-timestamp anomaly. The helper never
+   clears or replaces Eventhouse data:
+   ```powershell
+   python scripts\replay_monitor_anomaly.py
+   python scripts\replay_monitor_anomaly.py --execute
+   ```
+   It appends a baseline and anomalous optical reading, one critical alert, and
+   one `IncidentEvents(Stage="Detected")` trigger. Allow one poll interval plus
+   investigation time, then verify one enriched proactive Teams response.
+
+`/monitor unsubscribe` is accepted only from the subscribed user in the
+subscribed conversation. Monitoring is at-least-once and can repeat a Teams
+update if the process stops after send but before cursor persistence. Do not
+enable Azure Monitor alerts or another notification trigger for this slice.
 
 ## 2b. Export outputs to a root `.env` file (required before steps 3-6)
 
@@ -294,6 +391,38 @@ that's already up to date, only publishing a new version where something
 actually changed. `agent/agent.py`'s `SPECIALIST_AGENTS` map resolves these
 five by name at startup -- run this **before** step 8 on a fresh environment,
 or the orchestrator's tool calls will fail with "agent not found".
+
+#### Gate A proof spike: Foundry IQ through APIM and one native Toolbox
+
+This is an opt-in proof gate, not the production five-specialist architecture,
+and has not passed live validation. Defaults above remain unchanged.
+
+1. Run `python scripts/create_foundry_toolbox_spike.py`. It creates or reuses
+   one exact-version Toolbox containing only `kb-mcp-connection` and prints
+   `FOUNDRY_IQ_TOOLBOX_MCP_URL` without credentials.
+2. Pass that exact URL as gateway deployment parameter
+   `foundryIqToolboxBackendUrl`. Pass the hosting project's ARM resource ID as
+   `foundryIqToolboxProjectResourceId` to grant the APIM identity the existing
+   project-scoped roles; if omitted, grant equivalent project access before
+   testing. An empty backend URL creates no Gate A API.
+3. After APIM exists, set `FOUNDRY_IQ_PROXY_CONNECTION_NAME` and
+   `FOUNDRY_IQ_PROXY_MCP_URL` (the gateway output ending in
+   `/specialists/foundry-iq/mcp`) plus the documented ARM/project metadata.
+   Retrieve the dedicated key from the Key Vault URI output
+   `FOUNDRY_IQ_PROXY_APIM_SUBSCRIPTION_KEY_SECRET_URI` into
+   `FOUNDRY_IQ_PROXY_APIM_SUBSCRIPTION_KEY` without printing or committing it,
+   then rerun the spike script. It creates/updates a separate `CustomKeys`
+   RemoteTool connection; APIM, not that connection, obtains the Toolbox
+   backend token with its managed identity.
+4. Run `create_foundry_agents.py` with both proxy variables set. Only
+   `noc-knowledge-agent` changes; either variable missing fails closed and
+   neither set preserves the original direct `kb-mcp-connection`.
+
+Do not expand this to the other four specialists until a live
+`Prompt Agent -> APIM -> Toolbox -> Foundry IQ MCP` invocation succeeds.
+Work IQ remains delegated OAuth and requires an interactive user consent
+context; this service-mode Foundry IQ proof does not establish unattended
+Work IQ support.
 
 ## 5. Web IQ
 
@@ -721,6 +850,74 @@ az group delete --name "rg-$AZURE_ENV_NAME" --yes --no-wait
 #    App registrations for its display name and delete it, or):
 az ad app delete --id "<automation-sp-app-id>"
 ```
+
+## TokenOps reconciliation
+
+The App Service emits one classified `usage_event` for each model-bearing step:
+`specialist`, `orchestrator`, or automatic `synthesis`. Deterministic Fabric
+Graph execution emits `usage_kind=direct_graph` with
+`accounting_mode=no_llm` and zero tokens. This prevents a direct Graph answer
+from being charged as a specialist LLM call.
+
+### Complete token and cost breakdown for one Teams turn or monitor incident
+
+1. Resolve the Log Analytics workspace customer ID:
+
+   ```powershell
+   $workspaceResourceId = az monitor app-insights component show `
+     --app appi-z4u5lniaf25kw --resource-group rg-noc-iq-demo `
+     --query workspaceResourceId -o tsv
+   $workspaceId = az monitor log-analytics workspace show `
+     --ids $workspaceResourceId --query customerId -o tsv
+   ```
+
+2. List recent correlated runs. Interactive Teams turns use `teams-...`; the
+   operations monitor uses `monitor-...`. The query also shows retries and
+   which agents contributed:
+
+   ```powershell
+   $runsKql = @'
+   AppTraces
+   | where TimeGenerated > ago(24h) and Message == "usage_event"
+   | extend p = parse_json(Properties)
+   | summarize First=min(TimeGenerated), Last=max(TimeGenerated), Rows=count(),
+       InputTokens=sum(toint(p.input_tokens)), OutputTokens=sum(toint(p.output_tokens)),
+       Agents=make_set(tostring(p.agent))
+     by RunId=tostring(p.run_id), User=tostring(p.user_name)
+   | where isnotempty(RunId)
+   | order by Last desc
+   '@
+   az monitor log-analytics query --workspace $workspaceId `
+     --analytics-query $runsKql -o table
+   ```
+
+3. Copy the required `RunId`, then generate its complete breakdown:
+
+   ```powershell
+   Set-Location gateway\app\config-sync-worker
+   python check_usage_detail.py --workspace-id $workspaceId --hours 24 `
+     --run-id "<teams-or-monitor-run-id>" --pricing-region eastus2
+   ```
+
+4. Interpret the output:
+   - `actual` rows are metered SDK usage from specialists, the Teams
+     orchestrator, or automatic synthesis.
+   - `estimate` rows are outer-adapter estimates and are displayed separately;
+     do not add them to actual cost.
+   - `no_llm` rows are deterministic direct Graph execution with zero model
+     tokens/cost.
+   - Multiple rows for the same agent can be retries or multiple invocations;
+     they are real billable calls and remain in the run total.
+   - `cached` and `reasoning` are shown for completeness, while the current
+     Retail Prices calculation uses billed input and output token meters.
+
+5. If a row appears missing, allow Application Insights ingestion time, widen
+   `--hours`, and rerun step 2. New deployments always stamp a deterministic
+   run ID even when the optional run-ledger enforcement runtime is absent.
+
+The report prefers the Cosmos desired-state pricing document when reachable
+and otherwise uses the Azure Retail Prices API. Dollar values are estimated
+from token meters and are not Azure invoice reconciliation.
 
 ## Cost note
 
