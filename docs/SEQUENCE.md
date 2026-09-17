@@ -179,7 +179,7 @@ sequenceDiagram
             KI-->>Orc: Foundry IQ evidence + actual SDK token usage
         and
             Orc->>FI: Link/conduit/service/SLA topology evidence
-            FI-->>Orc: Direct Graph result when template matches;<br/>otherwise persisted topology specialist
+            FI-->>Orc: Direct Graph result when template matches,<br/>otherwise persisted topology specialist
         and
             Orc->>WI: Public vendor/carrier advisory evidence
             WI-->>Orc: Web IQ evidence + actual SDK token usage
@@ -511,8 +511,8 @@ sequenceDiagram
     APIM->>Auth: Preserve authorization, MCP headers, and body
     Auth->>Auth: Validate Entra signature, issuer, and audience
     Auth->>MCP: Validated request
-    MCP->>MCP: Check trusted claims/scope; OBO to ai.azure.com
-    MCP->>Ledger: Mint run from oid + MCP request id; precall
+    MCP->>MCP: Check trusted claims/scope, then OBO to ai.azure.com
+    MCP->>Ledger: Mint run from oid + MCP request id, then precall
     MCP->>NOC: AgentMCPTool.call_tool(task), per-call contextvars set
     NOC->>Foundry: Existing orchestrator and specialist calls
     Foundry-->>NOC: Grounded response
