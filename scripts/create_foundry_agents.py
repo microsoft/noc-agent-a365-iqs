@@ -17,7 +17,13 @@ prior history.
 
 Required env (from `.env` / `azd env get-values`):
   FOUNDRY_PROJECT_ENDPOINT, AZURE_AI_MODEL_DEPLOYMENT_NAME, AZURE_TENANT_ID
-Optional (defaults match the live connections already set up in
+Optional model profile:
+  AZURE_AI_SPECIALIST_MODEL_DEPLOYMENT_NAME defaults to the orchestrator model
+  for backward compatibility. FOUNDRY_IQ_MODEL_DEPLOYMENT_NAME,
+  FABRIC_IQ_MODEL_DEPLOYMENT_NAME, WEB_IQ_MODEL_DEPLOYMENT_NAME,
+  WORK_IQ_MODEL_DEPLOYMENT_NAME, and RTI_IQ_MODEL_DEPLOYMENT_NAME override one
+  specialist each.
+Optional connections (defaults match the live connections already set up in
 rg-<env-name> -- see agent/.env.template):
   FOUNDRY_IQ_CONNECTION_NAME (default kb-mcp-connection)
   FABRIC_IQ_CONNECTION_NAME (default fabric-iq-connection)
@@ -45,6 +51,7 @@ load_dotenv(REPO_ROOT / "agent" / ".env", override=False)
 @dataclass(frozen=True)
 class SpecialistSpec:
     agent_name: str
+    model_env: str
     connection_env: str
     default_connection_name: str
     server_label: str
@@ -55,6 +62,7 @@ class SpecialistSpec:
 SPECIALISTS = [
     SpecialistSpec(
         agent_name="noc-knowledge-agent",
+        model_env="FOUNDRY_IQ_MODEL_DEPLOYMENT_NAME",
         connection_env="FOUNDRY_IQ_CONNECTION_NAME",
         default_connection_name="kb-mcp-connection",
         server_label="foundry-iq",
@@ -70,6 +78,7 @@ SPECIALISTS = [
     ),
     SpecialistSpec(
         agent_name="noc-topology-agent",
+        model_env="FABRIC_IQ_MODEL_DEPLOYMENT_NAME",
         connection_env="FABRIC_IQ_CONNECTION_NAME",
         default_connection_name="fabric-iq-connection",
         server_label="fabric-iq",
@@ -90,6 +99,7 @@ SPECIALISTS = [
     ),
     SpecialistSpec(
         agent_name="noc-threatintel-agent",
+        model_env="WEB_IQ_MODEL_DEPLOYMENT_NAME",
         connection_env="WEB_IQ_CONNECTION_NAME",
         default_connection_name="web-iq-connection",
         server_label="web-iq",
@@ -105,6 +115,7 @@ SPECIALISTS = [
     ),
     SpecialistSpec(
         agent_name="noc-comms-agent",
+        model_env="WORK_IQ_MODEL_DEPLOYMENT_NAME",
         connection_env="WORK_IQ_CONNECTION_NAME",
         default_connection_name="WorkIQ",
         server_label="work-iq",
@@ -119,6 +130,7 @@ SPECIALISTS = [
     ),
     SpecialistSpec(
         agent_name="noc-incident-agent",
+        model_env="RTI_IQ_MODEL_DEPLOYMENT_NAME",
         connection_env="FABRIC_RTI_CONNECTION_ID",
         default_connection_name="",
         server_label="fabric-rti",
@@ -195,6 +207,12 @@ def _connection_override(spec: SpecialistSpec) -> tuple[str, str] | None:
     return (name, url) if name else None
 
 
+def specialist_model(spec: SpecialistSpec, default_model: str) -> str:
+    """Resolve one specialist's model without coupling it to the orchestrator."""
+    model = os.getenv(spec.model_env, "").strip()
+    return model or default_model
+
+
 def ensure_specialist_agent(project: AIProjectClient, model: str, spec: SpecialistSpec) -> None:
     if spec.server_url_env:
         connection_id = os.environ[spec.connection_env]
@@ -244,14 +262,20 @@ def ensure_specialist_agent(project: AIProjectClient, model: str, spec: Speciali
 
 def main() -> None:
     endpoint = os.environ["FOUNDRY_PROJECT_ENDPOINT"]
-    model = os.environ["AZURE_AI_MODEL_DEPLOYMENT_NAME"]
+    orchestrator_model = os.environ["AZURE_AI_MODEL_DEPLOYMENT_NAME"]
+    default_specialist_model = os.getenv(
+        "AZURE_AI_SPECIALIST_MODEL_DEPLOYMENT_NAME", orchestrator_model
+    ).strip() or orchestrator_model
     tenant_id: Optional[str] = os.getenv("AZURE_TENANT_ID")
 
     credential = AzureDeveloperCliCredential(tenant_id=tenant_id, process_timeout=60)
     try:
         project = AIProjectClient(endpoint=endpoint, credential=credential, allow_preview=True)
         log(f"Provisioning {len(SPECIALISTS)} specialist Prompt Agent(s) against {endpoint} ...")
+        log(f"  orchestrator model remains '{orchestrator_model}'")
         for spec in SPECIALISTS:
+            model = specialist_model(spec, default_specialist_model)
+            log(f"  {spec.agent_name} model -> {model}")
             ensure_specialist_agent(project, model, spec)
         project.close()
     finally:

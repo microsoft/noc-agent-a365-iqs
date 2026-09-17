@@ -15,7 +15,7 @@ sequenceDiagram
     Op->>Az: az login / azd auth login (target subscription)
     Op->>Az: azd up  (infra/main.bicep)
     Az->>RG: Create RG (tags: purpose=noc-iq-demo, DeleteBy=<date>)
-    Az->>RG: Create AI Foundry account + project + gpt-5.4/text-embedding-3-small deployments
+    Az->>RG: Create Foundry project + gpt-5.4 orchestrator + gpt-5.4-mini specialist + embedding deployments
     Az->>RG: Create Azure AI Search + Storage + App Insights + Log Analytics
     Az->>RG: Create Fabric capacity (F2)
     Az->>RG: Create App Service (agent host) + project-scope RBAC

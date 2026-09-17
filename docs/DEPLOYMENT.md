@@ -56,8 +56,9 @@ azd up
 
 This creates, in a new resource group (`rg-<AZURE_ENV_NAME>` by default):
 
-- AI Foundry account + project with `gpt-5.4` + `text-embedding-3-small`
-  deployments
+- AI Foundry account + project with `gpt-5.4` for MAF orchestration,
+  `gpt-5.4-mini` for persisted specialists, and `text-embedding-3-small` for
+  knowledge-base vectorization
 - Azure AI Search, Storage account, Application Insights + Log Analytics
 - Fabric capacity (F2 SKU — billable, see `README.md` cost note)
 - Linux App Service (B1) for the agent host, with project-scope RBAC on its
@@ -383,7 +384,11 @@ python create_foundry_agents.py
 
 Creates/updates `noc-knowledge-agent`, `noc-topology-agent`,
 `noc-threatintel-agent`, `noc-comms-agent`, and `noc-incident-agent` as
-persisted Foundry Prompt Agents, each with exactly one MCP tool bound to the
+persisted Foundry Prompt Agents. The default model profile keeps the MAF
+orchestrator and automatic synthesis on `gpt-5.4`, while all five persisted
+specialists use `gpt-5.4-mini`. This preserves the strongest reasoning at the
+routing/reconciliation boundary and reduces the repeated retrieval-agent cost.
+Each specialist still has exactly one MCP tool bound to the
 connection created above (`kb-mcp-connection`, `fabric-iq-connection`,
 `web-iq-connection`, `WorkIQ`, `fabric-rti-connection` respectively). It's
 idempotent: it diffs each agent's live latest-version definition
@@ -392,6 +397,15 @@ that's already up to date, only publishing a new version where something
 actually changed. `agent/agent.py`'s `SPECIALIST_AGENTS` map resolves these
 five by name at startup -- run this **before** step 8 on a fresh environment,
 or the orchestrator's tool calls will fail with "agent not found".
+
+`AZURE_AI_SPECIALIST_MODEL_DEPLOYMENT_NAME` controls the default specialist
+model. Optional `FOUNDRY_IQ_MODEL_DEPLOYMENT_NAME`,
+`FABRIC_IQ_MODEL_DEPLOYMENT_NAME`, `WEB_IQ_MODEL_DEPLOYMENT_NAME`,
+`WORK_IQ_MODEL_DEPLOYMENT_NAME`, and `RTI_IQ_MODEL_DEPLOYMENT_NAME` values can
+override one specialist after evaluation. Every override must be an actual
+model deployment in this Foundry account. Copilot execution-profile names such
+as `gpt-5.6-terra` or `gpt-5.6-luna` must not be copied into these settings
+unless matching Azure AI Foundry deployments are available and provisioned.
 
 #### Gate A proof spike: Foundry IQ through APIM and one native Toolbox
 

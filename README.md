@@ -97,6 +97,14 @@ Example output for a seven-day report (`--hours 168`, Azure Retail Prices,
 **Sample run total:** 13 rows · 197,406 tokens · **$0.64933 estimated**.
 For the complete per-row report, use the deployment procedure linked above.
 
+## Model profile
+
+The default cost/quality profile keeps MAF routing and final automatic
+synthesis on `gpt-5.4`, while the five persisted Foundry specialists use
+`gpt-5.4-mini`. Per-specialist deployment overrides are supported for measured
+quality exceptions. Copilot profile names such as `gpt-5.6-terra` and
+`gpt-5.6-luna` are not assumed to be Azure AI Foundry deployment names.
+
 ## IQ auth-type matrix (read this before wiring connections)
 
 | IQ surface | Auth type | Why |
