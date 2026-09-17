@@ -77,8 +77,9 @@ The non-destructive base deployment currently uses resource group
 and the B1 Linux App Service is in West US 3. The regional split was required
 because Search capacity was unavailable in East US 2/West US 3 and the East US
 2 B1 App Service quota was zero. The host is
-`https://app-n2tjinbhnbln6.azurewebsites.net`; its managed identity is
-`c010ca2f-55c5-486e-a6d6-54747b3d2e72`. Governance disabled public Storage
+`https://app-n2tjinbhnbln6.azurewebsites.net`; resolve its managed identity
+at deployment time from `AGENT_HOST_PRINCIPAL_ID` rather than copying an
+identity GUID from another environment. Governance disabled public Storage
 access, so the host uses VNet integration plus a Blob Private Endpoint; Fabric
 remains public for this PoC. The dedicated F2 capacity `fabricn2tjinbhnbln6`
 is active in West US 3 and workspace `NOC-Topology-adcea30f` is assigned to it.
@@ -137,15 +138,15 @@ destination and delegated access are confirmed:
    settings, restart, and recheck health:
    ```powershell
    az webapp config appsettings set `
-     --subscription c8a35425-69fe-4a90-bf45-4475c0adb74a `
-     --resource-group rg-noc-iq-demo `
-     --name app-n2tjinbhnbln6 `
+     --subscription $env:AZURE_SUBSCRIPTION_ID `
+     --resource-group $env:AZURE_RESOURCE_GROUP `
+     --name $env:AGENT_HOST_APP_NAME `
      --settings INCIDENT_MONITOR_ENABLED=true `
      --output none
    az webapp restart `
-     --subscription c8a35425-69fe-4a90-bf45-4475c0adb74a `
-     --resource-group rg-noc-iq-demo `
-     --name app-n2tjinbhnbln6
+     --subscription $env:AZURE_SUBSCRIPTION_ID `
+     --resource-group $env:AZURE_RESOURCE_GROUP `
+     --name $env:AGENT_HOST_APP_NAME
    ```
    Require `monitor.enabled=true`, `monitor.running=true`, and normally
    `monitor.leader=true` after startup.
@@ -920,6 +921,34 @@ from being charged as a specialist LLM call.
 The report prefers the Cosmos desired-state pricing document when reachable
 and otherwise uses the Azure Retail Prices API. Dollar values are estimated
 from token meters and are not Azure invoice reconciliation.
+
+#### Sample report glimpse
+
+The following is a real, historical sample captured on September 17, 2026 by
+running the command above with `--hours 168`. Times are UTC; prices came from
+Azure Retail Prices for `gpt-5.4` in `eastus2`. It demonstrates why the run ID
+must remain visible: repeated specialist rows belong to durable proactive
+retries and are real billable model calls rather than duplicate accounting.
+
+| Time | Run ID | Agent | Input tokens | Output tokens | Cached tokens | Cost (USD) | Note |
+|---|---|---|---:|---:|---:|---:|---|
+| 01:06:19 | `monitor-65cf0d6d7e561a7076c16cc5` | `noc-topology-agent` | 1,896 | 288 | 0 | $0.00906 | Proactive Fabric IQ call |
+| 01:06:10 | `monitor-65cf0d6d7e561a7076c16cc5` | `noc-comms-agent` | 8,213 | 907 | 1,920 | $0.03414 | Proactive Work IQ call |
+| 01:06:10 | `monitor-65cf0d6d7e561a7076c16cc5` | `noc-incident-agent` | 3,782 | 964 | 0 | $0.02391 | Proactive RTI call |
+| 01:05:51 | `monitor-65cf0d6d7e561a7076c16cc5` | `noc-knowledge-agent` | 15,369 | 1,135 | 0 | $0.05545 | Proactive Foundry IQ call |
+| 01:05:31 | `monitor-65cf0d6d7e561a7076c16cc5` | `noc-threatintel-agent` | 25,221 | 955 | 2,816 | $0.07738 | Proactive Web IQ call |
+| 01:04:43 | `monitor-65cf0d6d7e561a7076c16cc5` | `noc-comms-agent` | 9,493 | 1,296 | 0 | $0.04317 | Earlier retry attempt |
+| 01:04:26 | `monitor-65cf0d6d7e561a7076c16cc5` | `noc-knowledge-agent` | 15,430 | 1,410 | 0 | $0.05973 | Earlier retry attempt |
+| 01:03:58 | `monitor-65cf0d6d7e561a7076c16cc5` | `noc-threatintel-agent` | 25,309 | 696 | 0 | $0.07371 | Earlier retry attempt |
+| 01:02:28 | `monitor-65cf0d6d7e561a7076c16cc5` | `noc-knowledge-agent` | 15,159 | 901 | 0 | $0.05141 | Earlier retry attempt |
+| 01:02:16 | `monitor-65cf0d6d7e561a7076c16cc5` | `noc-threatintel-agent` | 25,400 | 838 | 0 | $0.07607 | Earlier retry attempt |
+
+That correlated run contains **10 rows**, **154,662 input + output tokens**, and
+an estimated **$0.50403** model cost. The complete seven-day sample contained
+36 rows and 564,812 tokens: `$0.50403` for this run, `$0.64933` for a second
+monitor run, and `$0.65101` in older unscoped rows, for **$1.80437 total**.
+Unscoped rows predate deterministic correlation and cannot be reliably assigned
+to an individual Teams turn or monitor incident.
 
 ## Cost note
 
