@@ -408,11 +408,11 @@ asserted from the model's unaided knowledge):
 ## 5. Merged end-to-end: the live Teams turn + TokenOps governance + the async gateway loop
 
 Sections 2 and 3 above are two separate mermaid diagrams over the *same*
-turn — this section interleaves them into one flat, numbered record, then
-appends the two asynchronous flows (config-sync-worker's job cycle, and the
-Admin UI's write path) that are not part of any single Teams turn but
-directly feed and are fed by it. Recorded here for reference; not itself a
-new diagram.
+interactive turn. This section interleaves them into one flat, numbered
+record, then adds a separate proactive Operations Agent story and the
+asynchronous TokenOps configuration loop. The proactive story is not an
+extension of an inbound Teams turn: Eventhouse detection starts it and the
+App Service resumes a previously subscribed Teams conversation.
 
 ### Part 1 — the live Teams turn (steps 1-37)
 
@@ -468,7 +468,50 @@ hop (≤2s timeout, usually much faster) before the specialist returns — a
 rounding error next to the tens-of-seconds Foundry call it wraps. See §3's
 "Latency contract" note for the full detail.
 
-### Part 2 — asynchronous, out-of-band (not tied to any single Teams turn)
+### Part 2 — Operations Agent proactive story (Eventhouse → five IQs → Teams)
+
+This path begins without an inbound Teams message. Its one-time prerequisite
+is that an authorized operator has completed delegated IQ consent in the
+same Teams conversation and sent `/monitor subscribe`. The monitor then owns
+detection, durable retry, investigation, and proactive delivery.
+
+| # | Description | Azure component |
+|---|---|---|
+| P1 | Operator completes delegated Work IQ/RTI sign-in and sends `/monitor subscribe` once | Microsoft Teams |
+| P2 | App Service verifies the user and persists the conversation ID, authorized user ID, and display name | App Service → private Blob Storage |
+| P3 | `IncidentMonitor` starts when `INCIDENT_MONITOR_ENABLED=true` | App Service |
+| P4 | Each instance attempts to acquire `monitor/leader.lock`; only the lease holder polls, while standby instances retry each poll interval | Private Blob Storage |
+| P5 | Leader reads the durable compound cursor, pending work, and dead-letter state | Private Blob Storage (`monitor/state.json`) |
+| P6 | Pending work is retried before any newer incident is considered | App Service |
+| P7 | Monitor queries `IncidentEvents` for `Stage == "Detected"` inside the bounded catch-up window, ordered by `(Timestamp, IncidentId)` | Fabric Eventhouse KQL database |
+| P8 | Every unseen event is persisted as pending **before** investigation starts | Private Blob Storage |
+| P9 | App Service resumes only the stored Teams conversation and passes the configured Agent 365 token handler | Agent 365 proactive conversation API |
+| P10 | The resumed turn verifies that the user matches the subscription and restores that user's durable OAuth state | App Service + Agent 365 auth handler |
+| P11 | App Service exchanges the restored identity for an `ai.azure.com/.default` OBO token | Microsoft Entra ID |
+| P12 | A deterministic `monitor-<24 hex>` run ID is derived from incident timestamp + incident ID | `NocAgent` |
+| P13 | `investigate_detected_incident(...)` launches a fixed five-family fan-out with bounded concurrency | App Service |
+| P14 | Foundry IQ retrieves runbook, specification, SLA, and historical-ticket narrative | Persisted knowledge Prompt Agent → Search KB MCP |
+| P15 | Fabric IQ retrieves link/conduit/service exposure; supported link templates use deterministic Graph REST, otherwise the persisted topology specialist is used | Fabric Graph / persisted topology Prompt Agent |
+| P16 | Web IQ checks public carrier/vendor advisories | Persisted threat-intelligence Prompt Agent → Web IQ MCP |
+| P17 | Work IQ retrieves current on-call and incident-bridge context using the subscribed user's delegated identity | Persisted communications Prompt Agent → Work IQ MCP |
+| P18 | RTI IQ retrieves optical readings, alerts, and the exact incident timeline from Eventhouse | Persisted incident Prompt Agent → Fabric RTI MCP |
+| P19 | Every specialist/direct-Graph invocation emits a classified `usage_event` correlated by the monitor run ID; retries remain separate billable rows | Application Insights |
+| P20 | If all five families complete, a tool-free synthesis call produces one cited proactive update and emits `usage_kind=synthesis` | Foundry model + Application Insights |
+| P21 | App Service sends the completed update into the stored Teams conversation | Agent 365 proactive conversation API → Microsoft Teams |
+| P22 | After successful delivery, the monitor advances the compound cursor and removes the pending item | Private Blob Storage |
+| P23 | If consent, timeout, or any specialist fails, no partial alert is sent; the durable attempt count is incremented and newer incidents remain blocked | App Service + private Blob Storage |
+| P24 | At the configured maximum attempts, the safe incident ID/error type is dead-lettered and the cursor advances | Private Blob Storage |
+
+The proactive path is intentionally stricter than the interactive path:
+all five evidence families must complete before Teams receives anything.
+Delivery is **at-least-once**; a crash after Teams accepts the message but
+before cursor persistence can produce a duplicate. Unlike an interactive
+Teams run, the current proactive implementation does not create a run-ledger
+token or issue `/v1/precall`/`/v1/postcall`; its TokenOps record is the
+classified, deterministic `monitor-...` `usage_event` stream used by
+`check_usage_detail.py`.
+
+### Part 3 — asynchronous TokenOps configuration loop (not tied to one Teams turn)
 
 | # | Description | Azure component |
 |---|---|---|
@@ -482,12 +525,15 @@ rounding error next to the tens-of-seconds Foundry call it wraps. See §3's
 | 45 | Next Teams turn's `/v1/precall` decisions (steps 8/13/16/19/22/25 above) now reflect the freshly-synced quotas/pricing | Run Ledger ↔ APIM named values ↔ Cosmos |
 | 46 | Anyone running `check_usage.py`/`check_usage_detail.py` reads `usage_event` traces + the `pricing` doc to render real $ cost per turn | Log Analytics + Cosmos DB |
 
-The loop that ties Part 1 and Part 2 together: every live Teams turn writes
-usage into App Insights and ledger reservations into Cosmos; every worker
-cycle reads that usage back out, refreshes pricing, and re-tightens the
-named values the *next* turn's precall checks against. Cosmos is the
-desired-state source of truth throughout; APIM named values are only the
-runtime-enforced mirror.
+The loop that ties Part 1 and Part 3 together: every live Teams turn writes
+usage into App Insights and, when the optional enforcement runtime is
+available, ledger reservations into Cosmos. Every worker cycle reads that
+usage back out, refreshes pricing, and re-tightens the named values the
+*next* interactive turn's precall checks against. Part 2 contributes its
+classified `monitor-...` usage rows to the same reporting surface, but does
+not currently participate in ledger reservation enforcement. Cosmos is the
+desired-state source of truth when that standalone TokenOps runtime is
+deployed; APIM named values are only its runtime-enforced mirror.
 
 ## 6. Copilot Cowork MCP channel
 
