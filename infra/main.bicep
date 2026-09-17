@@ -120,6 +120,18 @@ var fallbackDeployments = [
     }
   }
   {
+    name: 'gpt-5.4-mini'
+    model: {
+      format: 'OpenAI'
+      name: 'gpt-5.4-mini'
+      version: '2026-03-17'
+    }
+    sku: {
+      name: 'GlobalStandard'
+      capacity: 150
+    }
+  }
+  {
     name: 'text-embedding-3-small'
     model: {
       format: 'OpenAI'
@@ -135,6 +147,10 @@ var fallbackDeployments = [
 var deployments = empty(configuredDeployments) ? fallbackDeployments : configuredDeployments
 var chatDeployments = filter(deployments, deployment => deployment.model.name != 'text-embedding-3-small')
 var embeddingDeployments = filter(deployments, deployment => deployment.model.name == 'text-embedding-3-small')
+var orchestratorDeployments = filter(chatDeployments, deployment => deployment.name == 'gpt-5.4')
+var specialistDeployments = filter(chatDeployments, deployment => deployment.name == 'gpt-5.4-mini')
+var orchestratorModelDeploymentName = !empty(orchestratorDeployments) ? string(orchestratorDeployments[0].name) : string(chatDeployments[0].name)
+var specialistModelDeploymentName = !empty(specialistDeployments) ? string(specialistDeployments[0].name) : orchestratorModelDeploymentName
 var resourceToken = uniqueString(subscription().id, resourceGroupName, location)
 var effectiveAgentHostLocation = empty(agentHostLocation) ? location : agentHostLocation
 var tags = union(
@@ -220,7 +236,8 @@ module agentHost 'core/host/appservice.bicep' = {
       SCM_DO_BUILD_DURING_DEPLOYMENT: 'true'
       WEBSITE_VNET_ROUTE_ALL: enablePrivateStorageAccess ? '1' : '0'
       FOUNDRY_PROJECT_ENDPOINT: aiProject.outputs.AZURE_AI_PROJECT_ENDPOINT
-      AZURE_AI_MODEL_DEPLOYMENT_NAME: string(chatDeployments[0].name)
+      AZURE_AI_MODEL_DEPLOYMENT_NAME: orchestratorModelDeploymentName
+      AZURE_AI_SPECIALIST_MODEL_DEPLOYMENT_NAME: specialistModelDeploymentName
       AZURE_AI_SEARCH_SERVICE_ENDPOINT: aiProject.outputs.search.serviceEndpoint
       FOUNDRY_IQ_KNOWLEDGE_BASE_NAME: 'noc-knowledge-kb'
       APPLICATIONINSIGHTS_CONNECTION_STRING: aiProject.outputs.APPLICATIONINSIGHTS_CONNECTION_STRING
@@ -292,8 +309,9 @@ output AZURE_AI_PROJECT_NAME string = aiProject.outputs.projectName
 output AZURE_AI_PROJECT_ENDPOINT string = aiProject.outputs.AZURE_AI_PROJECT_ENDPOINT
 output FOUNDRY_PROJECT_ENDPOINT string = aiProject.outputs.AZURE_AI_PROJECT_ENDPOINT
 
-output AZURE_AI_MODEL_DEPLOYMENT_NAME string = string(chatDeployments[0].name)
-output AZURE_OPENAI_CHATGPT_DEPLOYMENT string = string(chatDeployments[0].name)
+output AZURE_AI_MODEL_DEPLOYMENT_NAME string = orchestratorModelDeploymentName
+output AZURE_AI_SPECIALIST_MODEL_DEPLOYMENT_NAME string = specialistModelDeploymentName
+output AZURE_OPENAI_CHATGPT_DEPLOYMENT string = orchestratorModelDeploymentName
 output AZURE_OPENAI_EMBEDDING_DEPLOYMENT string = string(embeddingDeployments[0].name)
 output AZURE_OPENAI_ENDPOINT string = aiProject.outputs.AZURE_OPENAI_ENDPOINT
 

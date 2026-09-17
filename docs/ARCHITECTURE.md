@@ -300,8 +300,8 @@ existing resources are reused), tagged `purpose=noc-iq-demo` plus an optional
 | Resource | Bicep module | Notes |
 |---|---|---|
 | Resource group | `infra/main.bicep` | Subscription-scope entry point |
-| AI Foundry account + project | `infra/core/ai/ai-project.bicep` | Hosts the `gpt-5.4` deployment, Foundry IQ KB connection, Web IQ connection |
-| Model deployments | `infra/core/ai/ai-project.bicep` (`sequentialDeployments`) | `gpt-5.4` (chat) + `text-embedding-3-small` (KB vectorization) |
+| AI Foundry account + project | `infra/core/ai/ai-project.bicep` | Hosts the orchestrator and specialist model deployments, Foundry IQ KB connection, and Web IQ connection |
+| Model deployments | `infra/core/ai/ai-project.bicep` (`sequentialDeployments`) | `gpt-5.4` (MAF routing + synthesis), `gpt-5.4-mini` (persisted specialists), and `text-embedding-3-small` (KB vectorization) |
 | Azure AI Search | `infra/core/search/azure_ai_search.bicep` | Backs the Foundry IQ knowledge base |
 | Storage account | `infra/core/storage/storage.bicep` | KB source-document staging |
 | Application Insights + Log Analytics | `infra/core/monitor/*.bicep` | End-to-end tracing for `verify-e2e` |

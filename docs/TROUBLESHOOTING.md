@@ -415,6 +415,69 @@ Separately (not fixed, just documented — real upstream/design issues, not bugs
 - The orchestrator's hard-coded `AGENT_RUN_TIMEOUT_SECONDS` (180s) watchdog can trip on a single Teams turn that asks two questions at once, since sequential/overlapping specialist calls can each legitimately take 80–170s+. Workaround for now: ask one thing per Teams message.
 - `POST /ledger/v1/runs` still 404s (APIM route mismatch) — fails safe, run-scoped governance headers are simply not attached; unrelated to usage logging.
 
+## Finding the complete token and cost breakdown for one session
+
+In this solution, “session” means one correlated application run: a Teams
+turn uses `teams-<24 hex>`, and one proactive Eventhouse incident uses
+`monitor-<24 hex>`. Use the following procedure; do not use `check_usage.py`
+for the App Service's direct Foundry traffic because that script reads APIM
+metric rows and will normally return no rows for this application.
+
+1. Resolve the Log Analytics customer ID from the App Insights component:
+
+   ```powershell
+   $workspaceResourceId = az monitor app-insights component show `
+     --app appi-z4u5lniaf25kw --resource-group rg-noc-iq-demo `
+     --query workspaceResourceId -o tsv
+   $workspaceId = az monitor log-analytics workspace show `
+     --ids $workspaceResourceId --query customerId -o tsv
+   ```
+
+2. Discover the correlated run ID from `usage_event` traces. Use the
+   `teams-...` or `monitor-...` value from the `RunId` column:
+
+   ```powershell
+   $runsKql = @'
+   AppTraces
+   | where TimeGenerated > ago(24h) and Message == "usage_event"
+   | extend p = parse_json(Properties)
+   | summarize First=min(TimeGenerated), Last=max(TimeGenerated), Rows=count(),
+       InputTokens=sum(toint(p.input_tokens)), OutputTokens=sum(toint(p.output_tokens)),
+       CachedTokens=sum(toint(p.cached_tokens)), ReasoningTokens=sum(toint(p.reasoning_tokens)),
+       Kinds=make_set(tostring(p.usage_kind)), Modes=make_set(tostring(p.accounting_mode)),
+       Agents=make_set(tostring(p.agent))
+     by RunId=tostring(p.run_id), User=tostring(p.user_name)
+   | where isnotempty(RunId)
+   | order by Last desc
+   '@
+   az monitor log-analytics query --workspace $workspaceId `
+     --analytics-query $runsKql -o table
+   ```
+
+3. Render the detailed per-request report for the selected run:
+
+   ```powershell
+   Set-Location gateway\app\config-sync-worker
+   python check_usage_detail.py --workspace-id $workspaceId --hours 24 `
+     --run-id "<teams-or-monitor-run-id>" --pricing-region eastus2
+   ```
+
+4. Read the report as follows:
+   - `actual`: metered model usage from the orchestrator, specialists, or
+     synthesis; include `input`, `output`, `cached`, and `reasoning` columns.
+   - `estimate`: adapter estimates shown separately; do not add them to actual
+     cost.
+   - `no_llm`: deterministic direct Graph work with zero model tokens/cost.
+   - Repeated rows are retries or repeated calls and remain billable.
+   - `actual_cost` and `estimate_only` are estimated dollar values, not Azure
+     invoice reconciliation. Pricing uses Cosmos when reachable, otherwise
+     Azure Retail Prices.
+
+If no rows appear, wait for App Insights ingestion, increase `--hours`, and
+repeat steps 2–3. The detailed report is the authoritative application-level
+view for this App Service; it remains available even when the optional
+standalone run-ledger runtime is not deployed.
+
 ## Config-sync-worker + Admin UI: full bug chain from "worker job never completes" to "cost shows $0"
 
 Found and fixed in order while chasing "how do I track token cost" end-to-end:

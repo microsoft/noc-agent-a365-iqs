@@ -56,8 +56,9 @@ azd up
 
 This creates, in a new resource group (`rg-<AZURE_ENV_NAME>` by default):
 
-- AI Foundry account + project with `gpt-5.4` + `text-embedding-3-small`
-  deployments
+- AI Foundry account + project with `gpt-5.4` for MAF orchestration,
+  `gpt-5.4-mini` for persisted specialists, and `text-embedding-3-small` for
+  knowledge-base vectorization
 - Azure AI Search, Storage account, Application Insights + Log Analytics
 - Fabric capacity (F2 SKU — billable, see `README.md` cost note)
 - Linux App Service (B1) for the agent host, with project-scope RBAC on its
@@ -77,8 +78,9 @@ The non-destructive base deployment currently uses resource group
 and the B1 Linux App Service is in West US 3. The regional split was required
 because Search capacity was unavailable in East US 2/West US 3 and the East US
 2 B1 App Service quota was zero. The host is
-`https://app-n2tjinbhnbln6.azurewebsites.net`; its managed identity is
-`c010ca2f-55c5-486e-a6d6-54747b3d2e72`. Governance disabled public Storage
+`https://app-n2tjinbhnbln6.azurewebsites.net`; resolve its managed identity
+at deployment time from `AGENT_HOST_PRINCIPAL_ID` rather than copying an
+identity GUID from another environment. Governance disabled public Storage
 access, so the host uses VNet integration plus a Blob Private Endpoint; Fabric
 remains public for this PoC. The dedicated F2 capacity `fabricn2tjinbhnbln6`
 is active in West US 3 and workspace `NOC-Topology-adcea30f` is assigned to it.
@@ -137,15 +139,15 @@ destination and delegated access are confirmed:
    settings, restart, and recheck health:
    ```powershell
    az webapp config appsettings set `
-     --subscription c8a35425-69fe-4a90-bf45-4475c0adb74a `
-     --resource-group rg-noc-iq-demo `
-     --name app-n2tjinbhnbln6 `
+     --subscription $env:AZURE_SUBSCRIPTION_ID `
+     --resource-group $env:AZURE_RESOURCE_GROUP `
+     --name $env:AGENT_HOST_APP_NAME `
      --settings INCIDENT_MONITOR_ENABLED=true `
      --output none
    az webapp restart `
-     --subscription c8a35425-69fe-4a90-bf45-4475c0adb74a `
-     --resource-group rg-noc-iq-demo `
-     --name app-n2tjinbhnbln6
+     --subscription $env:AZURE_SUBSCRIPTION_ID `
+     --resource-group $env:AZURE_RESOURCE_GROUP `
+     --name $env:AGENT_HOST_APP_NAME
    ```
    Require `monitor.enabled=true`, `monitor.running=true`, and normally
    `monitor.leader=true` after startup.
@@ -382,7 +384,11 @@ python create_foundry_agents.py
 
 Creates/updates `noc-knowledge-agent`, `noc-topology-agent`,
 `noc-threatintel-agent`, `noc-comms-agent`, and `noc-incident-agent` as
-persisted Foundry Prompt Agents, each with exactly one MCP tool bound to the
+persisted Foundry Prompt Agents. The default model profile keeps the MAF
+orchestrator and automatic synthesis on `gpt-5.4`, while all five persisted
+specialists use `gpt-5.4-mini`. This preserves the strongest reasoning at the
+routing/reconciliation boundary and reduces the repeated retrieval-agent cost.
+Each specialist still has exactly one MCP tool bound to the
 connection created above (`kb-mcp-connection`, `fabric-iq-connection`,
 `web-iq-connection`, `WorkIQ`, `fabric-rti-connection` respectively). It's
 idempotent: it diffs each agent's live latest-version definition
@@ -391,6 +397,15 @@ that's already up to date, only publishing a new version where something
 actually changed. `agent/agent.py`'s `SPECIALIST_AGENTS` map resolves these
 five by name at startup -- run this **before** step 8 on a fresh environment,
 or the orchestrator's tool calls will fail with "agent not found".
+
+`AZURE_AI_SPECIALIST_MODEL_DEPLOYMENT_NAME` controls the default specialist
+model. Optional `FOUNDRY_IQ_MODEL_DEPLOYMENT_NAME`,
+`FABRIC_IQ_MODEL_DEPLOYMENT_NAME`, `WEB_IQ_MODEL_DEPLOYMENT_NAME`,
+`WORK_IQ_MODEL_DEPLOYMENT_NAME`, and `RTI_IQ_MODEL_DEPLOYMENT_NAME` values can
+override one specialist after evaluation. Every override must be an actual
+model deployment in this Foundry account. Copilot execution-profile names such
+as `gpt-5.6-terra` or `gpt-5.6-luna` must not be copied into these settings
+unless matching Azure AI Foundry deployments are available and provisioned.
 
 #### Gate A proof spike: Foundry IQ through APIM and one native Toolbox
 
@@ -882,6 +897,8 @@ from being charged as a specialist LLM call.
    | extend p = parse_json(Properties)
    | summarize First=min(TimeGenerated), Last=max(TimeGenerated), Rows=count(),
        InputTokens=sum(toint(p.input_tokens)), OutputTokens=sum(toint(p.output_tokens)),
+       CachedTokens=sum(toint(p.cached_tokens)), ReasoningTokens=sum(toint(p.reasoning_tokens)),
+       Kinds=make_set(tostring(p.usage_kind)), Modes=make_set(tostring(p.accounting_mode)),
        Agents=make_set(tostring(p.agent))
      by RunId=tostring(p.run_id), User=tostring(p.user_name)
    | where isnotempty(RunId)
@@ -918,6 +935,34 @@ from being charged as a specialist LLM call.
 The report prefers the Cosmos desired-state pricing document when reachable
 and otherwise uses the Azure Retail Prices API. Dollar values are estimated
 from token meters and are not Azure invoice reconciliation.
+
+#### Sample report glimpse
+
+The following is a real, historical sample captured on September 17, 2026 by
+running the command above with `--hours 168`. Times are UTC; prices came from
+Azure Retail Prices for `gpt-5.4` in `eastus2`. It demonstrates why the run ID
+must remain visible: repeated specialist rows belong to durable proactive
+retries and are real billable model calls rather than duplicate accounting.
+
+| Time | Run ID | Agent | Input tokens | Output tokens | Cached tokens | Cost (USD) | Note |
+|---|---|---|---:|---:|---:|---:|---|
+| 01:06:19 | `monitor-65cf0d6d7e561a7076c16cc5` | `noc-topology-agent` | 1,896 | 288 | 0 | $0.00906 | Proactive Fabric IQ call |
+| 01:06:10 | `monitor-65cf0d6d7e561a7076c16cc5` | `noc-comms-agent` | 8,213 | 907 | 1,920 | $0.03414 | Proactive Work IQ call |
+| 01:06:10 | `monitor-65cf0d6d7e561a7076c16cc5` | `noc-incident-agent` | 3,782 | 964 | 0 | $0.02391 | Proactive RTI call |
+| 01:05:51 | `monitor-65cf0d6d7e561a7076c16cc5` | `noc-knowledge-agent` | 15,369 | 1,135 | 0 | $0.05545 | Proactive Foundry IQ call |
+| 01:05:31 | `monitor-65cf0d6d7e561a7076c16cc5` | `noc-threatintel-agent` | 25,221 | 955 | 2,816 | $0.07738 | Proactive Web IQ call |
+| 01:04:43 | `monitor-65cf0d6d7e561a7076c16cc5` | `noc-comms-agent` | 9,493 | 1,296 | 0 | $0.04317 | Earlier retry attempt |
+| 01:04:26 | `monitor-65cf0d6d7e561a7076c16cc5` | `noc-knowledge-agent` | 15,430 | 1,410 | 0 | $0.05973 | Earlier retry attempt |
+| 01:03:58 | `monitor-65cf0d6d7e561a7076c16cc5` | `noc-threatintel-agent` | 25,309 | 696 | 0 | $0.07371 | Earlier retry attempt |
+| 01:02:28 | `monitor-65cf0d6d7e561a7076c16cc5` | `noc-knowledge-agent` | 15,159 | 901 | 0 | $0.05141 | Earlier retry attempt |
+| 01:02:16 | `monitor-65cf0d6d7e561a7076c16cc5` | `noc-threatintel-agent` | 25,400 | 838 | 0 | $0.07607 | Earlier retry attempt |
+
+That correlated run contains **10 rows**, **154,662 input + output tokens**, and
+an estimated **$0.50403** model cost. The complete seven-day sample contained
+36 rows and 564,812 tokens: `$0.50403` for this run, `$0.64933` for a second
+monitor run, and `$0.65101` in older unscoped rows, for **$1.80437 total**.
+Unscoped rows predate deterministic correlation and cannot be reliably assigned
+to an individual Teams turn or monitor incident.
 
 ## Cost note
 
