@@ -640,6 +640,40 @@ _disable_direct_topology: contextvars.ContextVar[bool] = contextvars.ContextVar(
 )
 
 
+def _emit_usage_event(
+    *,
+    agent_name: str,
+    model_name: str,
+    input_tokens: int,
+    output_tokens: int,
+    cached_tokens: int = 0,
+    reasoning_tokens: int = 0,
+    query: str = "",
+    usage_kind: str = "specialist",
+    accounting_mode: str = "actual",
+) -> None:
+    """Emit one consistently classified TokenOps accounting record."""
+    user_id_ctx, user_name_ctx = _current_user_ctx.get() or ("unknown", "unknown")
+    logger.info(
+        "usage_event",
+        extra={
+            "event": "usage",
+            "run_id": _current_run_id.get() or "",
+            "user_id": user_id_ctx,
+            "user_name": user_name_ctx,
+            "agent": agent_name,
+            "model": model_name,
+            "query": query[:500],
+            "usage_kind": usage_kind,
+            "accounting_mode": accounting_mode,
+            "input_tokens": max(0, int(input_tokens or 0)),
+            "output_tokens": max(0, int(output_tokens or 0)),
+            "cached_tokens": max(0, int(cached_tokens or 0)),
+            "reasoning_tokens": max(0, int(reasoning_tokens or 0)),
+        },
+    )
+
+
 class _StaticTokenCredential(TokenCredential):
     """ponytail: minimal TokenCredential wrapping an already-fetched OBO token.
 
@@ -919,6 +953,15 @@ class NocAgent(AgentInterface):
             try:
                 direct_answer = await self._call_topology_graph(question)
                 if direct_answer:
+                    _emit_usage_event(
+                        agent_name="fabric-graph-direct",
+                        model_name="",
+                        input_tokens=0,
+                        output_tokens=0,
+                        query=question,
+                        usage_kind="direct_graph",
+                        accounting_mode="no_llm",
+                    )
                     return direct_answer
             except Exception as exc:  # noqa: BLE001 -- fall back to the persisted specialist
                 logger.warning("Direct Fabric Graph query failed; falling back to Data Agent: %s", exc)
@@ -990,26 +1033,15 @@ class NocAgent(AgentInterface):
         cached_tokens = getattr(getattr(usage, "input_tokens_details", None), "cached_tokens", 0) or 0
         reasoning_tokens = getattr(getattr(usage, "output_tokens_details", None), "reasoning_tokens", 0) or 0
         model_name = getattr(response, "model", agent_name) or agent_name
-        user_id_ctx, user_name_ctx = _current_user_ctx.get() or ("unknown", "unknown")
-        # Structured usage_event -> Application Insights customDimensions (via the
-        # configure_azure_monitor logging hook set up above), one row per specialist
-        # call. Query with a KQL join against the Cosmos `pricing` doc for $ cost;
-        # see gateway/app/config-sync-worker/check_usage_detail.py.
-        logger.info(
-            "usage_event",
-            extra={
-                "event": "specialist_usage",
-                "run_id": run_id or "",
-                "user_id": user_id_ctx,
-                "user_name": user_name_ctx,
-                "agent": agent_name,
-                "model": model_name,
-                "query": question[:500],
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-                "cached_tokens": cached_tokens,
-                "reasoning_tokens": reasoning_tokens,
-            },
+        _emit_usage_event(
+            agent_name=agent_name,
+            model_name=model_name,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cached_tokens=cached_tokens,
+            reasoning_tokens=reasoning_tokens,
+            query=question,
+            usage_kind="specialist",
         )
 
         if run_id:
@@ -1123,9 +1155,10 @@ class NocAgent(AgentInterface):
         user_handle = _current_user_ctx.set(
             (authorized_user_id, getattr(from_prop, "name", None) or "unknown")
         )
-        run_handle = _current_run_id.set(
+        monitor_run_id = (
             "monitor-" + hashlib.sha256(f"{detected_at}\n{safe_incident_id}".encode()).hexdigest()[:24]
         )
+        run_handle = _current_run_id.set(monitor_run_id)
         deadline_handle = _current_deadline.set(time.monotonic() + AGENT_RUN_TIMEOUT_SECONDS)
         try:
             pairs = await asyncio.gather(*(_invoke(key) for key in SPECIALIST_AGENTS))
@@ -1152,7 +1185,15 @@ class NocAgent(AgentInterface):
             result["consent_url"] = consent["consent_url"]
             result["consent_agent"] = consent["agent"]
         if complete:
-            result["response"] = await self._synthesize_automatic_investigation(result)
+            synthesis_run_handle = _current_run_id.set(monitor_run_id)
+            synthesis_user_handle = _current_user_ctx.set(
+                (authorized_user_id, getattr(from_prop, "name", None) or "unknown")
+            )
+            try:
+                result["response"] = await self._synthesize_automatic_investigation(result)
+            finally:
+                _current_user_ctx.reset(synthesis_user_handle)
+                _current_run_id.reset(synthesis_run_handle)
         return result
 
     async def _synthesize_automatic_investigation(self, investigation: dict) -> str:
@@ -1168,8 +1209,18 @@ class NocAgent(AgentInterface):
             tools=[],
             default_options={"store": False},
         )
-        result = await synthesis_agent.run(
-            [Message("user", [json.dumps(investigation, sort_keys=True)])]
+        synthesis_input = json.dumps(investigation, sort_keys=True)
+        result = await synthesis_agent.run([Message("user", [synthesis_input])])
+        usage = getattr(result, "usage_details", None) or {}
+        _emit_usage_event(
+            agent_name="noc-automatic-synthesis",
+            model_name=MODEL_DEPLOYMENT_NAME,
+            input_tokens=usage.get("input_token_count") or 0,
+            output_tokens=usage.get("output_token_count") or 0,
+            cached_tokens=usage.get("cached_token_count") or 0,
+            reasoning_tokens=usage.get("reasoning_token_count") or 0,
+            query=synthesis_input,
+            usage_kind="synthesis",
         )
         return result.text or "All five specialist families completed, but synthesis returned no text."
 
@@ -1239,8 +1290,18 @@ class NocAgent(AgentInterface):
                 if run_token:
                     await _run_ledger_postcall(run_id, reservation_id, failed=True)
                 raise
+            usage = getattr(result, "usage_details", None) or {}
+            _emit_usage_event(
+                agent_name=RUN_LEDGER_AGENT_NAME,
+                model_name=MODEL_DEPLOYMENT_NAME,
+                input_tokens=usage.get("input_token_count") or 0,
+                output_tokens=usage.get("output_token_count") or 0,
+                cached_tokens=usage.get("cached_token_count") or 0,
+                reasoning_tokens=usage.get("reasoning_token_count") or 0,
+                query=message,
+                usage_kind="orchestrator",
+            )
             if run_token:
-                usage = getattr(result, "usage_details", None) or {}
                 await _run_ledger_postcall(
                     run_id,
                     reservation_id,

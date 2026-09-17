@@ -188,6 +188,52 @@ async def check_cancel_and_lease_loss():
     assert repository.lease.released
 
 
+async def check_standby_retries_leader_lease():
+    class Lease:
+        def __init__(self):
+            self.released = False
+
+        async def renew(self):
+            pass
+
+        async def release(self):
+            self.released = True
+
+    class StandbyRepository(FakeRepository):
+        def __init__(self):
+            super().__init__()
+            self.attempts = 0
+            self.lease = Lease()
+
+        async def acquire_lease(self, _duration):
+            self.attempts += 1
+            if self.attempts == 1:
+                raise incident_monitor.ResourceExistsError("owned")
+            return self.lease
+
+    async def standby_sleep(_seconds):
+        await asyncio.sleep(0)
+
+    repository = StandbyRepository()
+    monitor = IncidentMonitor(
+        config(),
+        repository,
+        FakeSource([]),
+        lambda *_args: asyncio.sleep(0, result=True),
+        sleep=standby_sleep,
+    )
+    task = asyncio.create_task(monitor.run())
+    while repository.attempts < 2 or not monitor.is_leader:
+        await asyncio.sleep(0)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    assert repository.attempts == 2
+    assert repository.lease.released
+
+
 async def check_existing_leader_blob_is_not_rewritten():
     class ExistingBlob:
         async def exists(self):
@@ -227,6 +273,7 @@ async def run():
     await check_cursor_query_and_pending()
     await check_resume_retry_dead_letter_and_subscription()
     await check_cancel_and_lease_loss()
+    await check_standby_retries_leader_lease()
     await check_existing_leader_blob_is_not_rewritten()
 
 

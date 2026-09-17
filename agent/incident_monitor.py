@@ -326,7 +326,12 @@ class IncidentMonitor:
         lease = None
         renew_task = None
         try:
-            lease = await self.repository.acquire_lease(self.config.lease_seconds)
+            while lease is None:
+                try:
+                    lease = await self.repository.acquire_lease(self.config.lease_seconds)
+                except (ResourceExistsError, ResourceModifiedError):
+                    logger.info("Incident monitor standby: another instance owns the leader lease")
+                    await self.sleep(self.config.poll_seconds)
             self.is_leader = True
             renew_task = asyncio.create_task(self._renew(lease), name="incident-monitor-lease")
             while not self._lease_lost.is_set():
@@ -337,8 +342,6 @@ class IncidentMonitor:
                     )
                 except asyncio.TimeoutError:
                     pass
-        except (ResourceExistsError, ResourceModifiedError):
-            logger.info("Incident monitor standby: another instance owns the leader lease")
         except asyncio.CancelledError:
             raise
         except Exception as exc:

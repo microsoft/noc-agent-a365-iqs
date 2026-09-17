@@ -74,6 +74,12 @@ OBO/`UserEntraToken`). Full narrative and all steps are in
 [`docs/SEQUENCE.md`](docs/SEQUENCE.md) §3; PNG fallback at
 [`docs/images/tokenops-sequence.png`](docs/images/tokenops-sequence.png).
 
+For per-run reconciliation, run
+`gateway\app\config-sync-worker\check_usage_detail.py --workspace-id <guid> --run-id <id>`.
+It reports actual model usage, estimate-only usage, and zero-LLM direct Graph
+execution separately, using Cosmos pricing when reachable or Azure Retail
+Prices as a fallback.
+
 ## IQ auth-type matrix (read this before wiring connections)
 
 | IQ surface | Auth type | Why |

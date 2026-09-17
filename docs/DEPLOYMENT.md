@@ -851,6 +851,34 @@ az group delete --name "rg-$AZURE_ENV_NAME" --yes --no-wait
 az ad app delete --id "<automation-sp-app-id>"
 ```
 
+## TokenOps reconciliation
+
+The App Service emits one classified `usage_event` for each model-bearing step:
+`specialist`, `orchestrator`, or automatic `synthesis`. Deterministic Fabric
+Graph execution emits `usage_kind=direct_graph` with
+`accounting_mode=no_llm` and zero tokens. This prevents a direct Graph answer
+from being charged as a specialist LLM call.
+
+Run the report with the Log Analytics workspace customer ID:
+
+```powershell
+$workspaceResourceId = az monitor app-insights component show `
+  --app appi-z4u5lniaf25kw --resource-group rg-noc-iq-demo `
+  --query workspaceResourceId -o tsv
+$workspaceId = az monitor log-analytics workspace show `
+  --ids $workspaceResourceId --query customerId -o tsv
+Set-Location gateway\app\config-sync-worker
+python check_usage_detail.py --workspace-id $workspaceId --hours 24 `
+  --pricing-region eastus2
+```
+
+Use `--run-id <run-id>` for one incident/turn. The report keeps actual-token
+cost and estimate-only cost in separate columns, so outer MCP estimates are
+not added to actual SDK usage. It prefers the Cosmos desired-state pricing doc
+when reachable and otherwise uses the Azure Retail Prices API. Dollar values
+remain estimates rather than invoice reconciliation; retries are real model
+calls and therefore remain billable rows.
+
 ## Cost note
 
 The Fabric **F2** capacity is billable (~US$0.36/hr, ~US$260/mo if left
