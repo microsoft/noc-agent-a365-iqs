@@ -368,9 +368,20 @@ optional enforcement ledger is reachable:
   `direct_graph`.
 - `accounting_mode` distinguishes `actual`, `estimate`, and `no_llm`.
 
-The complete operator procedure for discovering a run ID and rendering its
-per-agent input/output/cached/reasoning tokens and estimated cost is in
-[`DEPLOYMENT.md`](DEPLOYMENT.md#complete-token-and-cost-breakdown-for-one-teams-turn-or-monitor-incident).
+The complete operator procedure is:
+
+1. Resolve the App Insights Log Analytics customer ID.
+2. Query `AppTraces` `usage_event` rows and select the `teams-...` or
+   `monitor-...` `run_id`.
+3. Run `check_usage_detail.py --run-id <id>` to print each request's
+   input/output/cached/reasoning tokens and estimated cost.
+4. Keep `actual`, `estimate`, and `no_llm` totals separate; retries remain
+   billable rows.
+
+The copy-paste commands are in
+[`DEPLOYMENT.md`](DEPLOYMENT.md#complete-token-and-cost-breakdown-for-one-teams-turn-or-monitor-incident),
+and the diagnostic version is in
+[`TROUBLESHOOTING.md`](TROUBLESHOOTING.md#finding-the-complete-token-and-cost-breakdown-for-one-session).
 Actual and estimate-only totals are deliberately separate, and `no_llm`
 direct Graph rows remain zero-cost. A retry is not deduplicated because it
 made another model call and consumed tokens.

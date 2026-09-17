@@ -882,6 +882,8 @@ from being charged as a specialist LLM call.
    | extend p = parse_json(Properties)
    | summarize First=min(TimeGenerated), Last=max(TimeGenerated), Rows=count(),
        InputTokens=sum(toint(p.input_tokens)), OutputTokens=sum(toint(p.output_tokens)),
+       CachedTokens=sum(toint(p.cached_tokens)), ReasoningTokens=sum(toint(p.reasoning_tokens)),
+       Kinds=make_set(tostring(p.usage_kind)), Modes=make_set(tostring(p.accounting_mode)),
        Agents=make_set(tostring(p.agent))
      by RunId=tostring(p.run_id), User=tostring(p.user_name)
    | where isnotempty(RunId)
