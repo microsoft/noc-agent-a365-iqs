@@ -119,7 +119,8 @@ def build_incident_query(config: MonitorConfig, cursor: Optional[Cursor], now: d
         )
         cursor_filter = (
             f"| where Timestamp > datetime({_iso(cursor_time)}) "
-            f"or (Timestamp == datetime({_iso(cursor_time)}) and IncidentId > {_kql_string(cursor.incident_id)})"
+            f"or (Timestamp == datetime({_iso(cursor_time)}) "
+            f"and strcmp(IncidentId, {_kql_string(cursor.incident_id)}) > 0)"
         )
     else:
         lower = now - timedelta(minutes=config.first_run_lookback_minutes)
