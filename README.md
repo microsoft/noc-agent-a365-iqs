@@ -82,6 +82,21 @@ estimate-only usage, and zero-LLM direct Graph execution separately, using
 Cosmos pricing when reachable or Azure Retail Prices as a fallback. See the
 [numbered procedure](docs/DEPLOYMENT.md#complete-token-and-cost-breakdown-for-one-teams-turn-or-monitor-incident).
 
+### Sample usage and cost glimpse
+
+Example output for a seven-day report (`--hours 168`, Azure Retail Prices,
+`eastus2`). Times are UTC; costs are estimated, not invoice reconciliation.
+
+| Time | Agent | Input Tokens (in) | Output Tokens (out) | Cached Tokens | Cost (USD) | Note |
+|---|---|---:|---:|---:|---:|---|
+| 01:12:04 | `noc-comms-agent` | 12,698 | 1,964 | 1,920 | $0.06121 | Proactive specialist |
+| 01:11:47 | `noc-incident-agent` | 3,808 | 1,031 | 1,536 | $0.02499 | RTI evidence |
+| 01:11:25 | `noc-knowledge-agent` | 14,667 | 970 | 0 | $0.05122 | Foundry IQ |
+| 01:11:08 | `noc-threatintel-agent` | 38,953 | 847 | 2,816 | $0.11009 | Web IQ |
+
+**Sample run total:** 13 rows · 197,406 tokens · **$0.64933 estimated**.
+For the complete per-row report, use the deployment procedure linked above.
+
 ## IQ auth-type matrix (read this before wiring connections)
 
 | IQ surface | Auth type | Why |
