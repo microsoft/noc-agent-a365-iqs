@@ -126,6 +126,105 @@ IQ stays the "narrative" specialist: written tickets, runbooks, and
 post-mortems. When both are called on the same incident, the orchestrator is
 expected to reconcile them, not blur them together.
 
+## 2A. Operations Agent — Eventhouse monitoring to proactive Teams alert
+
+This is the unattended operations path. It does **not** require a user to ask
+a question first, but it does require one-time setup in the destination Teams
+conversation: complete delegated IQ consent and send `/monitor subscribe`.
+The App Service owns detection, durable cursoring, investigation, retries, and
+proactive delivery; Fabric Eventhouse remains the telemetry source.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Op as Operator
+    participant Teams as Teams conversation
+    participant Host as App Service<br/>host_agent_server.py
+    participant Blob as Blob durable state<br/>subscription / cursor / lease
+    participant Mon as IncidentMonitor<br/>incident_monitor.py
+    participant EH as Fabric Eventhouse<br/>IncidentEvents
+    participant Orc as NocAgent automatic investigation
+    participant KI as Foundry IQ
+    participant FI as Fabric IQ / direct Graph
+    participant WI as Web IQ
+    participant CI as Work IQ
+    participant RI as RTI IQ
+    participant AI as Application Insights
+
+    Op->>Teams: Complete Work IQ/RTI delegated sign-in
+    Op->>Teams: /monitor subscribe
+    Teams->>Host: Bot activity with authorized user + conversation
+    Host->>Blob: Store proactive conversation reference and authorized user
+    Host-->>Teams: Subscription confirmed
+
+    Op->>Host: Set INCIDENT_MONITOR_ENABLED=true and restart
+    Host->>Mon: Initialize monitor
+    Mon->>Blob: Acquire/renew monitor/leader.lock lease
+    Note over Mon,Blob: Only one App Service instance polls. Standby instances retry<br/>lease acquisition every poll interval after deployment overlap.
+
+    loop Every INCIDENT_MONITOR_POLL_SECONDS
+        Mon->>Blob: Read monitor/state.json compound cursor + pending work
+        Mon->>EH: Query Stage == "Detected" within bounded catch-up window<br/>ordered by Timestamp, IncidentId
+        EH-->>Mon: New detected incidents + Detail
+        Mon->>Blob: Persist event as pending before investigation
+
+        Mon->>Host: _handle_detected_incident(event, subscription)
+        Host->>Teams: Resume stored conversation with AGENTIC token handler
+        Teams-->>Host: Restore subscribed user's durable OAuth state
+        Host->>Orc: investigate_detected_incident(id, timestamp, detail)
+        Orc->>Host: Exchange ai.azure.com OBO token for subscribed user
+
+        par Fixed five-family fan-out
+            Orc->>KI: Runbook, specifications, and historical-ticket evidence
+            KI-->>Orc: Foundry IQ evidence + actual SDK token usage
+        and
+            Orc->>FI: Link/conduit/service/SLA topology evidence
+            FI-->>Orc: Direct Graph result when template matches;<br/>otherwise persisted topology specialist
+        and
+            Orc->>WI: Public vendor/carrier advisory evidence
+            WI-->>Orc: Web IQ evidence + actual SDK token usage
+        and
+            Orc->>CI: Current on-call and incident-bridge context
+            CI-->>Orc: Work IQ evidence + actual SDK token usage
+        and
+            Orc->>RI: Optical readings, alert, and incident timeline
+            RI-->>Orc: RTI Eventhouse evidence + actual SDK token usage
+        end
+
+        alt All five families completed
+            Orc->>Orc: Tool-free automatic synthesis
+            Orc->>AI: Emit classified usage_event rows<br/>(specialist/direct_graph/synthesis)
+            Orc-->>Host: Grounded proactive incident update
+            Host-->>Teams: Send one enriched proactive alert
+            Mon->>Blob: Advance cursor and remove pending event
+        else Consent, timeout, or specialist unavailable
+            Orc->>AI: Record exception/partial specialist evidence
+            Mon->>Blob: Increment durable attempt count
+            alt Attempts remain
+                Mon->>Mon: Retry before polling newer events
+            else Max attempts reached
+                Mon->>Blob: Dead-letter safe incident ID/error type and advance cursor
+            end
+        end
+    end
+```
+
+Operational invariants:
+
+- `IncidentEvents.Stage == "Detected"` is the trigger. The replay helper appends
+  rows; it never clears or reseeds Eventhouse tables.
+- The `(Timestamp, IncidentId)` cursor, pending item, subscription, and leader
+  lease are durable Blob state. Delivery is at-least-once, so a process crash
+  after Teams accepts a message but before cursor persistence can duplicate it.
+- The automatic path has a **fixed five-family fan-out** and sends nothing when
+  any required family is incomplete. This is intentionally stricter than an
+  interactive turn where the orchestrator chooses a subset of tools.
+- The resumed proactive turn passes the configured Agent 365 OAuth handler to
+  restore the subscribed user's durable consent before OBO exchange.
+- Direct Fabric Graph execution is classified as `accounting_mode=no_llm` with
+  zero specialist tokens. Persisted specialists and final synthesis report
+  actual SDK usage. Failed/retried model calls remain real billable rows.
+
 ## 3. Run-scoped token governance (TokenOps) — mixed routing, not a blanket APIM hop
 
 **Why not simply route all 6 model calls (orchestrator + 5 specialists) through
@@ -256,6 +355,31 @@ above applies to that specialist.
   around it, and — because the 5 specialists run concurrently — that
   overhead never stacks up across specialists, only (trivially) within each
   one's own path.
+
+### Per-session TokenOps correlation
+
+Every telemetry row has a deterministic `run_id`, independent of whether the
+optional enforcement ledger is reachable:
+
+- `teams-<24 hex>` identifies one Teams activity/turn.
+- `monitor-<24 hex>` identifies one detected Eventhouse incident and groups
+  all durable retries under the same run.
+- `usage_kind` distinguishes `orchestrator`, `specialist`, `synthesis`, and
+  `direct_graph`.
+- `accounting_mode` distinguishes `actual`, `estimate`, and `no_llm`.
+
+The complete operator procedure for discovering a run ID and rendering its
+per-agent input/output/cached/reasoning tokens and estimated cost is in
+[`DEPLOYMENT.md`](DEPLOYMENT.md#complete-token-and-cost-breakdown-for-one-teams-turn-or-monitor-incident).
+Actual and estimate-only totals are deliberately separate, and `no_llm`
+direct Graph rows remain zero-cost. A retry is not deduplicated because it
+made another model call and consumed tokens.
+
+Deployment-state caveat: after the earlier resource-group teardown, the
+standalone run-ledger/Redis/Cosmos/worker runtime is not currently deployed.
+The sequence above remains the design for enforcement when that stack is
+provisioned; current App Service telemetry and per-run cost reporting work
+without silently recreating those billable resources.
 
 ## 4. The 6 narrative beats this sequence must produce
 

@@ -980,13 +980,14 @@ class NocAgent(AgentInterface):
 
         run_id = _current_run_id.get()
         run_token = _current_run_token.get()
+        governed_run_id = run_id if run_token else None
         next_step = _next_run_step.get()
         step = next_step() if next_step else None
         reservation_id: Optional[str] = None
         max_output_tokens: Optional[int] = None  # None == leave the agent's own default alone
-        if run_id:
+        if governed_run_id:
             decision = await _run_ledger_precall(
-                run_id=run_id,
+                run_id=governed_run_id,
                 agent_name=agent_name.removesuffix("-agent"),
                 step=step or "0",
                 model=agent_name,
@@ -1016,8 +1017,8 @@ class NocAgent(AgentInterface):
                 create_kwargs["max_output_tokens"] = max_output_tokens
             response = await asyncio.to_thread(openai_client.responses.create, **create_kwargs)
         except Exception as exc:  # noqa: BLE001 -- degrade this one specialist call, not the whole turn
-            if run_id:
-                await _run_ledger_postcall(run_id, reservation_id, failed=True)
+            if governed_run_id:
+                await _run_ledger_postcall(governed_run_id, reservation_id, failed=True)
             if _extract_run_halt_reason(exc):
                 raise
             logger.error("❌ Specialist '%s' call failed: %s", agent_name, exc, exc_info=True)
@@ -1044,9 +1045,9 @@ class NocAgent(AgentInterface):
             usage_kind="specialist",
         )
 
-        if run_id:
+        if governed_run_id:
             await _run_ledger_postcall(
-                run_id,
+                governed_run_id,
                 reservation_id,
                 model=model_name,
                 input_tokens=input_tokens,
@@ -1264,7 +1265,10 @@ class NocAgent(AgentInterface):
             _current_user_token.set(foundry_user_token)
             _pending_consent.set(None)
             _current_run_token.set(run_token)
-            _current_run_id.set(run_id if run_token else None)
+            # Correlation is independent of governance availability: always stamp
+            # the deterministic Teams run ID, even when the optional ledger
+            # runtime is absent. Ledger calls remain gated by run_token.
+            _current_run_id.set(run_id)
             _next_run_step.set(_next_step if run_token else None)
             _current_user_ctx.set((user_id, display_name))
 

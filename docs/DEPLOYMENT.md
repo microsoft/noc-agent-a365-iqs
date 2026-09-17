@@ -859,25 +859,65 @@ Graph execution emits `usage_kind=direct_graph` with
 `accounting_mode=no_llm` and zero tokens. This prevents a direct Graph answer
 from being charged as a specialist LLM call.
 
-Run the report with the Log Analytics workspace customer ID:
+### Complete token and cost breakdown for one Teams turn or monitor incident
 
-```powershell
-$workspaceResourceId = az monitor app-insights component show `
-  --app appi-z4u5lniaf25kw --resource-group rg-noc-iq-demo `
-  --query workspaceResourceId -o tsv
-$workspaceId = az monitor log-analytics workspace show `
-  --ids $workspaceResourceId --query customerId -o tsv
-Set-Location gateway\app\config-sync-worker
-python check_usage_detail.py --workspace-id $workspaceId --hours 24 `
-  --pricing-region eastus2
-```
+1. Resolve the Log Analytics workspace customer ID:
 
-Use `--run-id <run-id>` for one incident/turn. The report keeps actual-token
-cost and estimate-only cost in separate columns, so outer MCP estimates are
-not added to actual SDK usage. It prefers the Cosmos desired-state pricing doc
-when reachable and otherwise uses the Azure Retail Prices API. Dollar values
-remain estimates rather than invoice reconciliation; retries are real model
-calls and therefore remain billable rows.
+   ```powershell
+   $workspaceResourceId = az monitor app-insights component show `
+     --app appi-z4u5lniaf25kw --resource-group rg-noc-iq-demo `
+     --query workspaceResourceId -o tsv
+   $workspaceId = az monitor log-analytics workspace show `
+     --ids $workspaceResourceId --query customerId -o tsv
+   ```
+
+2. List recent correlated runs. Interactive Teams turns use `teams-...`; the
+   operations monitor uses `monitor-...`. The query also shows retries and
+   which agents contributed:
+
+   ```powershell
+   $runsKql = @'
+   AppTraces
+   | where TimeGenerated > ago(24h) and Message == "usage_event"
+   | extend p = parse_json(Properties)
+   | summarize First=min(TimeGenerated), Last=max(TimeGenerated), Rows=count(),
+       InputTokens=sum(toint(p.input_tokens)), OutputTokens=sum(toint(p.output_tokens)),
+       Agents=make_set(tostring(p.agent))
+     by RunId=tostring(p.run_id), User=tostring(p.user_name)
+   | where isnotempty(RunId)
+   | order by Last desc
+   '@
+   az monitor log-analytics query --workspace $workspaceId `
+     --analytics-query $runsKql -o table
+   ```
+
+3. Copy the required `RunId`, then generate its complete breakdown:
+
+   ```powershell
+   Set-Location gateway\app\config-sync-worker
+   python check_usage_detail.py --workspace-id $workspaceId --hours 24 `
+     --run-id "<teams-or-monitor-run-id>" --pricing-region eastus2
+   ```
+
+4. Interpret the output:
+   - `actual` rows are metered SDK usage from specialists, the Teams
+     orchestrator, or automatic synthesis.
+   - `estimate` rows are outer-adapter estimates and are displayed separately;
+     do not add them to actual cost.
+   - `no_llm` rows are deterministic direct Graph execution with zero model
+     tokens/cost.
+   - Multiple rows for the same agent can be retries or multiple invocations;
+     they are real billable calls and remain in the run total.
+   - `cached` and `reasoning` are shown for completeness, while the current
+     Retail Prices calculation uses billed input and output token meters.
+
+5. If a row appears missing, allow Application Insights ingestion time, widen
+   `--hours`, and rerun step 2. New deployments always stamp a deterministic
+   run ID even when the optional run-ledger enforcement runtime is absent.
+
+The report prefers the Cosmos desired-state pricing document when reachable
+and otherwise uses the Azure Retail Prices API. Dollar values are estimated
+from token meters and are not Azure invoice reconciliation.
 
 ## Cost note
 

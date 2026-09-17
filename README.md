@@ -74,11 +74,13 @@ OBO/`UserEntraToken`). Full narrative and all steps are in
 [`docs/SEQUENCE.md`](docs/SEQUENCE.md) §3; PNG fallback at
 [`docs/images/tokenops-sequence.png`](docs/images/tokenops-sequence.png).
 
-For per-run reconciliation, run
+For per-run reconciliation, first discover the `teams-...` or `monitor-...`
+run ID from App Insights, then run
 `gateway\app\config-sync-worker\check_usage_detail.py --workspace-id <guid> --run-id <id>`.
-It reports actual model usage, estimate-only usage, and zero-LLM direct Graph
-execution separately, using Cosmos pricing when reachable or Azure Retail
-Prices as a fallback.
+It reports per-step input/output/cached/reasoning tokens, actual model cost,
+estimate-only usage, and zero-LLM direct Graph execution separately, using
+Cosmos pricing when reachable or Azure Retail Prices as a fallback. See the
+[numbered procedure](docs/DEPLOYMENT.md#complete-token-and-cost-breakdown-for-one-teams-turn-or-monitor-incident).
 
 ## IQ auth-type matrix (read this before wiring connections)
 
