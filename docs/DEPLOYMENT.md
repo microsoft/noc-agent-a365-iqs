@@ -71,6 +71,14 @@ It also prints `AGENT_HOST_PRINCIPAL_ID`, which is the identity to grant
 Fabric workspace/Eventhouse read access if that principal ID was not already
 recorded for the environment.
 
+**Deployment mode switch.** `azd up` (or `scripts/deploy.sh`) is the default
+mode described above. For the network-isolated mode (Foundry + Search private
+endpoints, Agent Service VNet injection, private jumpbox), run
+`scripts/deploy.sh --network yes` (PowerShell: `./scripts/deploy.ps1 -Network yes`)
+in a new azd environment, then follow
+[`PRIVATE_NETWORKING.md`](PRIVATE_NETWORKING.md) §2 for the steps below that
+need the private data plane.
+
 ### Current partner-showcase deployment (September 16, 2026)
 
 The non-destructive base deployment currently uses resource group

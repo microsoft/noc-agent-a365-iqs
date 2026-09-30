@@ -29,6 +29,9 @@
     "enablePrivateStorageAccess": {
       "value": "${enablePrivateStorageAccess=true}"
     },
+    "networkIsolation": {
+      "value": "${NETWORK_ISOLATION=false}"
+    },
     "enableFoundryIqGateway": {
       "value": "${enableFoundryIqGateway=false}"
     },
@@ -67,6 +70,21 @@
     },
     "incidentMonitorEnabled": {
       "value": "${incidentMonitorEnabled=false}"
+    },
+    "directKqlToolEnabled": {
+      "value": "${directKqlToolEnabled=false}"
+    },
+    "directSqlToolEnabled": {
+      "value": "${directSqlToolEnabled=false}"
+    },
+    "fabricSqlEndpoint": {
+      "value": "${FABRIC_SQL_ENDPOINT}"
+    },
+    "fabricSqlDatabase": {
+      "value": "${FABRIC_SQL_DATABASE}"
+    },
+    "fabricApiBaseUrl": {
+      "value": "${FABRIC_API_BASE_URL=https://api.fabric.microsoft.com}"
     }
   }
 }

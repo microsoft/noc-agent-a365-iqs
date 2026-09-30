@@ -35,6 +35,8 @@ microsoft-agents-a365-notifications==1.0.0
 azure-identity>=1.25.3
 azure-kusto-data>=5.0.5
 azure-storage-blob>=12.27.0
+# Optional direct Lakehouse T-SQL tool (DIRECT_SQL_TOOL_ENABLED); needs ODBC Driver 18 on the host.
+pyodbc>=5.1
 httpx>=0.28.1
 PyJWT>=2.8.0
 

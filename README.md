@@ -129,6 +129,18 @@ Full steps (Foundry IQ KB build, Fabric ontology + Data Agent, Web/Work IQ
 connections, A365 publish, teardown) are in
 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
 
+**Network-isolated option.** The default above is unchanged. To deploy Foundry
+and Azure AI Search behind private endpoints, with Agent Service injected into
+the VNet and a private jumpbox, use the switch:
+
+```bash
+scripts/deploy.sh --network yes      # PowerShell: ./scripts/deploy.ps1 -Network yes
+```
+
+The same doc covers the optional Fabric workspace private link, the opt-in
+read-only KQL/T-SQL/optical-baseline tools, the Fabric Operations Agent and the
+approval gate: [`docs/PRIVATE_NETWORKING.md`](docs/PRIVATE_NETWORKING.md).
+
 ## Live Teams acceptance and four-IQ prompts
 
 A greeting such as `hi` verifies Teams -> Agent 365/Bot -> App Service only.

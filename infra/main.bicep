@@ -71,6 +71,21 @@ param fabricKqlDatabaseName string = ''
 @description('Enable detected-incident polling. Off until a destination subscribes and delegated consent is confirmed.')
 param incidentMonitorEnabled bool = false
 
+@description('Register the read-only Eventhouse KQL + optical-baseline tools on the orchestrator (service identity).')
+param directKqlToolEnabled bool = false
+
+@description('Register the read-only Lakehouse T-SQL tool on the orchestrator (service identity).')
+param directSqlToolEnabled bool = false
+
+@description('Lakehouse SQL analytics endpoint host (Lakehouse properties.sqlEndpointProperties.connectionString).')
+param fabricSqlEndpoint string = ''
+
+@description('Lakehouse display name used as the SQL database name.')
+param fabricSqlDatabase string = ''
+
+@description('Fabric REST base URL. Set to the workspace-specific FQDN after denying public workspace access.')
+param fabricApiBaseUrl string = 'https://api.fabric.microsoft.com'
+
 @description('Microsoft web MCP endpoint for Web IQ.')
 param webIqMcpEndpoint string = 'https://api.microsoft.ai/v3/mcp'
 
@@ -86,6 +101,9 @@ param agentHostLocation string = ''
 
 @description('Create App Service VNet integration and a Blob private endpoint. Required when governance disables Storage public access.')
 param enablePrivateStorageAccess bool = true
+
+@description('Network-isolated deployment: Foundry account + Azure AI Search behind private endpoints with public access disabled, Agent Service injected into the VNet, and an ACI jumpbox for private setup. Off = existing public path. Use on a NEW environment: injection is fixed when the Foundry account is created. See docs/PRIVATE_NETWORKING.md.')
+param networkIsolation bool = false
 
 @description('Deploy the public PoC APIM passthrough for the versioned Foundry IQ Toolbox.')
 param enableFoundryIqGateway bool = false
@@ -153,6 +171,7 @@ var orchestratorModelDeploymentName = !empty(orchestratorDeployments) ? string(o
 var specialistModelDeploymentName = !empty(specialistDeployments) ? string(specialistDeployments[0].name) : orchestratorModelDeploymentName
 var resourceToken = uniqueString(subscription().id, resourceGroupName, location)
 var effectiveAgentHostLocation = empty(agentHostLocation) ? location : agentHostLocation
+var enableVnet = enablePrivateStorageAccess || networkIsolation
 var tags = union(
   {
     'azd-env-name': environmentName
@@ -165,6 +184,18 @@ resource rg 'Microsoft.Resources/resourceGroups@2024-03-01' = {
   name: resourceGroupName
   location: location
   tags: tags
+}
+
+module agentNetwork 'core/network/vnet.bicep' = if (enableVnet) {
+  scope: rg
+  name: 'agent-network'
+  params: {
+    location: effectiveAgentHostLocation
+    tags: tags
+    resourceToken: resourceToken
+    enableAgentSubnet: networkIsolation
+    enableJumpboxSubnet: networkIsolation
+  }
 }
 
 module aiProject 'core/ai/ai-project.bicep' = {
@@ -183,17 +214,72 @@ module aiProject 'core/ai/ai-project.bicep' = {
     foundryIqKnowledgeBaseName: 'noc-knowledge-kb'
     webIqMcpEndpoint: webIqMcpEndpoint
     webIqApiKey: webIqApiKey
+    publicNetworkAccess: networkIsolation ? 'Disabled' : 'Enabled'
+    agentSubnetId: networkIsolation ? agentNetwork!.outputs.agentSubnetId : ''
   }
 }
 
-module agentStorageNetwork 'core/network/appservice-storage-private.bicep' = if (enablePrivateStorageAccess) {
+module storagePrivateEndpoint 'core/network/private-endpoint.bicep' = if (enablePrivateStorageAccess) {
   scope: rg
   name: 'agent-storage-network'
   params: {
+    name: 'pe-${aiProject.outputs.storage.accountName}-blob'
     location: effectiveAgentHostLocation
     tags: tags
-    resourceToken: resourceToken
-    storageAccountId: aiProject.outputs.storage.accountId
+    subnetId: agentNetwork!.outputs.privateEndpointSubnetId
+    vnetId: agentNetwork!.outputs.vnetId
+    targetResourceId: aiProject.outputs.storage.accountId
+    groupId: 'blob'
+    dnsZoneNames: [
+      'privatelink.blob.${environment().suffixes.storage}'
+    ]
+  }
+}
+
+module foundryPrivateEndpoint 'core/network/private-endpoint.bicep' = if (networkIsolation) {
+  scope: rg
+  name: 'foundry-private-endpoint'
+  params: {
+    name: 'pe-${aiProject.outputs.aiServicesAccountName}'
+    location: effectiveAgentHostLocation
+    tags: tags
+    subnetId: agentNetwork!.outputs.privateEndpointSubnetId
+    vnetId: agentNetwork!.outputs.vnetId
+    targetResourceId: aiProject.outputs.accountId
+    groupId: 'account'
+    dnsZoneNames: [
+      'privatelink.cognitiveservices.azure.com'
+      'privatelink.openai.azure.com'
+      'privatelink.services.ai.azure.com'
+    ]
+  }
+}
+
+module searchPrivateEndpoint 'core/network/private-endpoint.bicep' = if (networkIsolation) {
+  scope: rg
+  name: 'search-private-endpoint'
+  params: {
+    name: 'pe-${aiProject.outputs.search.serviceName}'
+    location: effectiveAgentHostLocation
+    tags: tags
+    subnetId: agentNetwork!.outputs.privateEndpointSubnetId
+    vnetId: agentNetwork!.outputs.vnetId
+    targetResourceId: aiProject.outputs.search.serviceId
+    groupId: 'searchService'
+    dnsZoneNames: [
+      'privatelink.search.windows.net'
+    ]
+  }
+}
+
+module jumpbox 'core/network/jumpbox.bicep' = if (networkIsolation) {
+  scope: rg
+  name: 'jumpbox'
+  params: {
+    name: 'ci-noc-jump-${resourceToken}'
+    location: effectiveAgentHostLocation
+    tags: tags
+    subnetId: agentNetwork!.outputs.jumpboxSubnetId
   }
 }
 
@@ -231,10 +317,10 @@ module agentHost 'core/host/appservice.bicep' = {
     location: effectiveAgentHostLocation
     tags: tags
     resourceToken: resourceToken
-    virtualNetworkSubnetId: enablePrivateStorageAccess ? agentStorageNetwork!.outputs.integrationSubnetId : ''
+    virtualNetworkSubnetId: enableVnet ? agentNetwork!.outputs.integrationSubnetId : ''
     appSettings: {
       SCM_DO_BUILD_DURING_DEPLOYMENT: 'true'
-      WEBSITE_VNET_ROUTE_ALL: enablePrivateStorageAccess ? '1' : '0'
+      WEBSITE_VNET_ROUTE_ALL: enableVnet ? '1' : '0'
       FOUNDRY_PROJECT_ENDPOINT: aiProject.outputs.AZURE_AI_PROJECT_ENDPOINT
       AZURE_AI_MODEL_DEPLOYMENT_NAME: orchestratorModelDeploymentName
       AZURE_AI_SPECIALIST_MODEL_DEPLOYMENT_NAME: specialistModelDeploymentName
@@ -247,6 +333,11 @@ module agentHost 'core/host/appservice.bicep' = {
       FABRIC_GRAPH_MODEL_ID: fabricGraphModelId
       FABRIC_KQL_QUERY_URI: fabricKqlQueryUri
       FABRIC_KQL_DATABASE_NAME: fabricKqlDatabaseName
+      FABRIC_SQL_ENDPOINT: fabricSqlEndpoint
+      FABRIC_SQL_DATABASE: fabricSqlDatabase
+      FABRIC_API_BASE_URL: fabricApiBaseUrl
+      DIRECT_KQL_TOOL_ENABLED: string(directKqlToolEnabled)
+      DIRECT_SQL_TOOL_ENABLED: string(directSqlToolEnabled)
       AZURE_STORAGE_ACCOUNT_NAME: aiProject.outputs.storage.accountName
       AGENT_STATE_CONTAINER_NAME: aiProject.outputs.storage.agentStateContainerName
       INCIDENT_MONITOR_ENABLED: string(incidentMonitorEnabled)
@@ -331,3 +422,7 @@ output AGENT_HOST_HOSTNAME string = agentHost.outputs.webAppHostName
 output AGENT_HOST_PRINCIPAL_ID string = agentHost.outputs.principalId
 output FOUNDRY_IQ_GATEWAY_URL string = enableFoundryIqGateway ? foundryIqGateway!.outputs.gatewayUrl : ''
 output FOUNDRY_IQ_GATEWAY_NAME string = enableFoundryIqGateway ? foundryIqGateway!.outputs.name : ''
+output AGENT_VNET_ID string = enableVnet ? agentNetwork!.outputs.vnetId : ''
+output AGENT_PE_SUBNET_ID string = enableVnet ? agentNetwork!.outputs.privateEndpointSubnetId : ''
+output JUMPBOX_NAME string = networkIsolation ? jumpbox!.outputs.name : ''
+output NETWORK_ISOLATION bool = networkIsolation

@@ -1,0 +1,14 @@
+{
+  "configuration": {
+    "instructions": "DATA SOURCE\nUse the connected KQL database (the NOC Eventhouse). Query only these tables:\n- OpticalTelemetry: Timestamp (datetime), SensorId, LinkId, PowerDbm (optical receive power, dBm; more negative = weaker), Ber (bit error rate), UtilizationPct.\n- NetworkAlerts: Timestamp, AlertId, IncidentId, EntityId, Severity (P1..P4), AlertType (e.g. LOSS_OF_LIGHT, BER_THRESHOLD, POWER_FEED, CONTROL_PLANE), Suppressed (bool), AckedAt (datetime, empty if unacknowledged), AckedBy.\n- IncidentEvents: Timestamp, IncidentId, Stage (Detected, Acknowledged, Mitigated, Resolved, ...), Detail, Actor.\n\nGLOBAL GATES (apply to every rule)\n- Do not raise more than one notice for the same LinkId (or the same IncidentId) within 6 hours.\n- Never propose or take any remediation action. This agent only detects and notifies.\n- Do not speculate about root cause.\n\nRULE 1 - Sustained optical power drop against the sensor's own baseline\nFor each SensorId, take the average PowerDbm over the newest 15 minutes of OpticalTelemetry. Compare it with that sensor's own baseline: the average and standard deviation of PowerDbm from 14 days ago up to 30 minutes before the newest reading. Raise ONE notice per LinkId when the recent average is at least 3 baseline standard deviations BELOW the baseline average AND at least 5 percent worse than it. Skip a sensor whose baseline has fewer than 30 readings. Name the link, sensor, recent dBm, baseline dBm and the change.\n\nRULE 2 - Bit error rate spike\nFor each LinkId, raise ONE notice when the maximum Ber in the newest 15 minutes is at least 100 times the median Ber of the same link over the previous 24 hours and above 1e-6.\n\nRULE 3 - Silent sensor\nRaise ONE notice for each SensorId that reported in the last 24 hours but not in the last 15 minutes. Name the sensor, its LinkId and the minutes since the last reading.\n\nRULE 4 - Unacknowledged P1 alert\nRaise ONE notice for each NetworkAlerts row with Severity == 'P1', Suppressed == false and an empty AckedAt whose Timestamp is more than 10 minutes old. Name the alert, entity, alert type and minutes unacknowledged.\n\nNOTICE FORMAT\nOne short message per notice: severity (high, or urgent if two rules fire for the same LinkId), link or entity, the evidence in one or two numbers, and the rule that fired. State clearly that this is a monitoring notice, not a maintenance instruction; engineers can ask the NOC agent in Teams for blast radius and runbook.\n",
+    "dataSources": {
+      "00000000-0000-0000-0000-000000000000": {
+        "id": "00000000-0000-0000-0000-000000000000",
+        "type": "KustoDatabase",
+        "workspaceId": "00000000-0000-0000-0000-000000000000"
+      }
+    },
+    "actions": {}
+  },
+  "shouldRun": true
+}

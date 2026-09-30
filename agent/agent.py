@@ -77,6 +77,7 @@ from microsoft_agents.hosting.core import Authorization, CardFactory, TurnContex
 from microsoft_agents_a365.notifications.agent_notification import NotificationTypes
 
 from agent_interface import AgentInterface
+from data_tools import DirectDataTools
 
 load_dotenv()
 
@@ -207,6 +208,28 @@ report: (1) blast radius (services + SLA exposure), (2) the incident-telemetry e
 compounding risk, (4) the relevant runbook step, (5) any live vendor advisory, and (6)
 on-call / bridge context, in that order, clearly labeled. Say plainly when a specialist was
 unavailable or returned nothing rather than inventing an answer.
+"""
+
+# Appended only when the matching opt-in direct tool is registered (see data_tools.py).
+DIRECT_KQL_INSTRUCTIONS = """
+- check_optical_baseline (Eventhouse, computed in code): per-sensor PowerDbm/Ber for one link
+  compared with that sensor's own 14-day baseline (z-score, % change, trend, data age). Use it
+  for "is this link's optical signal abnormal" questions and quote its numbers and status
+  labels verbatim -- never re-judge NORMAL/ABNORMAL yourself, and report data_age_hours/stale.
+- query_eventhouse_kql (Eventhouse, read-only KQL you write yourself): tables OpticalTelemetry
+  (Timestamp, SensorId, LinkId, PowerDbm, Ber, UtilizationPct), NetworkAlerts (Timestamp,
+  AlertId, IncidentId, EntityId, Severity, AlertType, Suppressed, AckedAt, AckedBy) and
+  IncidentEvents (Timestamp, IncidentId, Stage, Detail, Actor). Aggregate; results cap at 200
+  rows. Prefer it over ask_incident_agent for exact counts, timelines and readings.
+"""
+
+DIRECT_SQL_INSTRUCTIONS = """
+- query_lakehouse_sql (Fabric Lakehouse SQL endpoint, read-only T-SQL you write yourself):
+  topology dimension/fact tables (DimCoreRouter, DimTransportLink, DimPhysicalConduit,
+  DimAmplifierSite, DimMPLSPath, DimService, DimSLAPolicy, DimAdvisory, FactConduitMapping,
+  FactAmplifierMapping, FactMPLSPathHops, FactServiceDependency, FactAdvisoryMapping). Use it ONLY
+  when the user explicitly asks for raw SQL / a direct Lakehouse query; otherwise use
+  ask_topology_agent. It runs as the service identity, so never use it to bypass user access.
 """
 
 
@@ -715,6 +738,7 @@ class NocAgent(AgentInterface):
         # cuts that to zero on cache hits.
         self._token_cache: dict[tuple[str, str], tuple[str, float]] = {}
         self._run_token_cache: dict[tuple[str, str], str] = {}
+        self._direct_tools = DirectDataTools(self._service_credential)
 
     # -------------------------------------------------------------------
     # LIFECYCLE
@@ -761,7 +785,7 @@ class NocAgent(AgentInterface):
         self._agent = Agent(
             client=self._chat_client,
             name="NocOrchestrator",
-            instructions=ORCHESTRATOR_INSTRUCTIONS,
+            instructions=self._orchestrator_instructions(),
             tools=orchestrator_tools,
             default_options={"store": False},
         )
@@ -830,6 +854,50 @@ class NocAgent(AgentInterface):
             if key not in self._available_agents:
                 continue
             tools.append(tool(self._make_ask_specialist(key), name=tool_name, description=description))
+        return tools + self._build_direct_tools()
+
+    def _orchestrator_instructions(self) -> str:
+        direct = getattr(self, "_direct_tools", None)
+        text = ORCHESTRATOR_INSTRUCTIONS
+        if direct is not None and direct.kql_enabled:
+            text += DIRECT_KQL_INSTRUCTIONS
+        if direct is not None and direct.sql_enabled:
+            text += DIRECT_SQL_INSTRUCTIONS
+        return text
+
+    def _build_direct_tools(self) -> list:
+        """Opt-in read-only Eventhouse/Lakehouse tools (DIRECT_KQL_TOOL_ENABLED / DIRECT_SQL_TOOL_ENABLED)."""
+        direct = getattr(self, "_direct_tools", None)
+        if direct is None:
+            return []
+
+        def _record(name: str, query: str) -> None:
+            _emit_usage_event(agent_name=name, model_name="", input_tokens=0, output_tokens=0,
+                              query=query, usage_kind=name, accounting_mode="no_llm")
+
+        tools = []
+        if direct.kql_enabled:
+            async def query_eventhouse_kql(kql: str) -> str:
+                _record("direct_kql", kql)
+                return await asyncio.to_thread(direct.run_kql, kql)
+
+            async def check_optical_baseline(link_id: str, alarm_threshold_dbm: Optional[float] = None) -> str:
+                _record("optical_baseline", link_id)
+                return await asyncio.to_thread(direct.optical_check, link_id, alarm_threshold_dbm)
+
+            tools += [
+                tool(query_eventhouse_kql, name="query_eventhouse_kql",
+                     description="Run one read-only KQL query against the NOC Eventhouse (OpticalTelemetry, NetworkAlerts, IncidentEvents); returns up to 200 rows as JSON with as_of_utc."),
+                tool(check_optical_baseline, name="check_optical_baseline",
+                     description="Compare a link's per-sensor optical PowerDbm/Ber with its own 14-day baseline (computed in code). Optional alarm_threshold_dbm estimates hours to crossing at the current trend."),
+            ]
+        if direct.sql_enabled:
+            async def query_lakehouse_sql(sql: str) -> str:
+                _record("direct_sql", sql)
+                return await asyncio.to_thread(direct.run_sql, sql)
+
+            tools.append(tool(query_lakehouse_sql, name="query_lakehouse_sql",
+                              description="Run one read-only T-SQL SELECT against the topology Lakehouse SQL endpoint. Only when the user explicitly asks for raw SQL or a direct Lakehouse query."))
         return tools
 
     def _make_ask_specialist(self, key: str):
@@ -860,8 +928,11 @@ class NocAgent(AgentInterface):
             self._service_credential.get_token,
             "https://api.fabric.microsoft.com/.default",
         )
+        # Workspace private link needs the workspace-specific FQDN
+        # (https://{wsid}.z{xy}.w.api.fabric.microsoft.com); see docs/PRIVATE_NETWORKING.md.
+        fabric_api = os.getenv("FABRIC_API_BASE_URL", "https://api.fabric.microsoft.com").rstrip("/")
         endpoint = (
-            f"https://api.fabric.microsoft.com/v1/workspaces/{workspace_id}"
+            f"{fabric_api}/v1/workspaces/{workspace_id}"
             f"/GraphModels/{graph_model_id}/executeQuery?preview=true"
         )
         escaped_link_id = link_id.replace("'", "''")

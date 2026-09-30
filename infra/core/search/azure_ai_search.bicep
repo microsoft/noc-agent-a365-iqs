@@ -33,6 +33,13 @@ param connectionName string = 'azure-ai-search-connection'
 @description('Location for all resources')
 param location string = resourceGroup().location
 
+@description('Public network access for the search service.')
+@allowed([
+  'enabled'
+  'disabled'
+])
+param publicNetworkAccess string = 'enabled'
+
 // Get reference to the AI Services account and project to access their managed identities
 resource aiAccount 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' existing = if (!empty(aiServicesAccountName) && !empty(aiProjectName)) {
   name: aiServicesAccountName
@@ -66,7 +73,7 @@ resource searchService 'Microsoft.Search/searchServices@2024-06-01-preview' = {
     encryptionWithCmk: {
       enforcement: 'Unspecified'
     }
-    publicNetworkAccess: 'enabled'
+    publicNetworkAccess: publicNetworkAccess
   }
 }
 

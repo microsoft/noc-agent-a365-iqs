@@ -37,6 +37,16 @@ param webIqMcpEndpoint string = 'https://api.microsoft.ai/v3/mcp'
 @description('Web IQ API key (CustomKeys auth). Empty skips the connection.')
 param webIqApiKey string = ''
 
+@description('Public network access for the Foundry account and Azure AI Search.')
+@allowed([
+  'Enabled'
+  'Disabled'
+])
+param publicNetworkAccess string = 'Enabled'
+
+@description('Subnet delegated to Microsoft.App/environments for Agent Service network injection. Empty = no injection. Only honoured when the account is first created.')
+param agentSubnetId string = ''
+
 var resourceToken = uniqueString(subscription().id, resourceGroup().id, location)
 
 module logAnalytics '../monitor/loganalytics.bicep' = if (enableMonitoring) {
@@ -69,7 +79,7 @@ resource aiAccount 'Microsoft.CognitiveServices/accounts@2025-06-01' = {
   identity: {
     type: 'SystemAssigned'
   }
-  properties: {
+  properties: union({
     allowProjectManagement: true
     customSubDomainName: 'ai-account-${resourceToken}'
     networkAcls: {
@@ -77,9 +87,17 @@ resource aiAccount 'Microsoft.CognitiveServices/accounts@2025-06-01' = {
       virtualNetworkRules: []
       ipRules: []
     }
-    publicNetworkAccess: 'Enabled'
+    publicNetworkAccess: publicNetworkAccess
     disableLocalAuth: false
-  }
+  }, empty(agentSubnetId) ? {} : {
+    networkInjections: [
+      {
+        scenario: 'agent'
+        subnetArmId: agentSubnetId
+        useMicrosoftManagedNetwork: false
+      }
+    ]
+  })
 
   @batchSize(1)
   resource sequentialDeployments 'deployments' = [
@@ -174,6 +192,7 @@ module azureAiSearch '../search/azure_ai_search.bicep' = {
     aiProjectName: aiAccount::project.name
     principalId: principalId
     principalType: principalType
+    publicNetworkAccess: publicNetworkAccess == 'Disabled' ? 'disabled' : 'enabled'
   }
 }
 
@@ -227,6 +246,7 @@ output search object = {
   serviceName: azureAiSearch.outputs.searchServiceName
   serviceEndpoint: 'https://${azureAiSearch.outputs.searchServiceName}.search.windows.net'
   connectionName: azureAiSearch.outputs.searchConnectionName
+  serviceId: resourceId('Microsoft.Search/searchServices', azureAiSearch.outputs.searchServiceName)
 }
 output storage object = {
   accountName: storage.outputs.storageAccountName
